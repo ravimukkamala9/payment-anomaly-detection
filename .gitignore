@@ -24,3 +24,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Java / Maven
+backend-java/target/
+backend-java/../frontend/node/
+
+# frontend-maven-plugin downloaded Node runtime
+frontend/node/
