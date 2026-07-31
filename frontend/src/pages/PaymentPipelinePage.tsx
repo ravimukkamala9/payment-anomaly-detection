@@ -1,7 +1,18 @@
 import React, { useState } from 'react';
 import Plot from 'react-plotly.js';
-import { Download, Play, CheckCircle, Clock, AlertTriangle, Circle, RefreshCw } from 'lucide-react';
+import { Download, Play, CheckCircle, Clock, AlertTriangle, Circle, RefreshCw, FileText } from 'lucide-react';
 import WoWLineChart from '../components/charts/WoWLineChart';
+import RawDataTab from './payment/RawDataTab';
+import ContributionShiftTab from './payment/ContributionShiftTab';
+import HistoricalAnalysisTab from './payment/HistoricalAnalysisTab';
+
+type MainTab = 'pipeline' | 'raw' | 'contribution' | 'historical';
+const MAIN_TABS: { id: MainTab; label: string }[] = [
+  { id: 'pipeline', label: 'Pipeline' },
+  { id: 'raw', label: 'Raw Data' },
+  { id: 'contribution', label: 'Contribution Shift' },
+  { id: 'historical', label: 'Historical Analysis' },
+];
 
 const API = '/api';
 
@@ -44,6 +55,7 @@ export default function PaymentPipelinePage() {
   const [threshold, setThreshold] = useState(3.0);
   const [generating, setGenerating] = useState(false);
   const [activeStage, setActiveStage] = useState<number>(0);
+  const [mainTab, setMainTab] = useState<MainTab>('pipeline');
 
   const setStatus = (i: number, s: StageStatus) =>
     setStageStatuses(prev => prev.map((v, idx) => idx === i ? s : v));
@@ -94,6 +106,17 @@ export default function PaymentPipelinePage() {
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
             Payment Pipeline
           </div>
+
+          <a href="/docs/payment_anomaly_brief.html" target="_blank" rel="noopener noreferrer"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)',
+              textDecoration: 'none', marginBottom: 12, padding: '6px 0',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.color = 'var(--primary-light)')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+          >
+            <FileText size={13} /> Executive Briefing
+          </a>
 
           <button onClick={handleGenerate} disabled={generating} style={btnStyle('var(--primary)', generating)}>
             <RefreshCw size={13} style={{ animation: generating ? 'spin 1s linear infinite' : 'none' }} />
@@ -191,18 +214,38 @@ export default function PaymentPipelinePage() {
       </div>
 
       {/* Main content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
-        {!genResult ? (
-          <EmptyState />
-        ) : stageResults.every(r => r === null) ? (
-          <ReadyState window={genResult.current_window.label} />
-        ) : (
-          [0, 1, 2].map(i => stageResults[i] && (
-            <StagePanel key={i} result={stageResults[i]!} color={STAGE_COLORS[i]} index={i}
-              anomaly={genResult.anomalies_injected.find(a => a.stage === i + 1)}
-              active={activeStage === i} onClick={() => setActiveStage(i)} />
-          ))
-        )}
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', gap: 4, padding: '12px 24px 0', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          {MAIN_TABS.map(t => (
+            <button key={t.id} onClick={() => setMainTab(t.id)} style={{
+              padding: '8px 14px', fontSize: 12, fontWeight: 600, borderRadius: '8px 8px 0 0',
+              background: mainTab === t.id ? 'var(--surface2)' : 'transparent',
+              color: mainTab === t.id ? 'var(--primary-light)' : 'var(--text-muted)',
+              borderBottom: mainTab === t.id ? '2px solid var(--primary)' : '2px solid transparent',
+            }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {mainTab === 'pipeline' && (
+            !genResult ? (
+              <EmptyState />
+            ) : stageResults.every(r => r === null) ? (
+              <ReadyState window={genResult.current_window.label} />
+            ) : (
+              [0, 1, 2].map(i => stageResults[i] && (
+                <StagePanel key={i} result={stageResults[i]!} color={STAGE_COLORS[i]} index={i}
+                  anomaly={genResult.anomalies_injected.find(a => a.stage === i + 1)}
+                  active={activeStage === i} onClick={() => setActiveStage(i)} />
+              ))
+            )
+          )}
+          {mainTab === 'raw' && <RawDataTab />}
+          {mainTab === 'contribution' && <ContributionShiftTab />}
+          {mainTab === 'historical' && <HistoricalAnalysisTab />}
+        </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
@@ -225,6 +268,7 @@ function StagePanel({ result, color, index, anomaly, active, onClick }: {
     <div onClick={onClick} style={{
       background: 'var(--surface2)', border: `1px solid ${active ? color : 'var(--border)'}`,
       borderRadius: 12, overflow: 'hidden', cursor: 'pointer', transition: 'border-color 0.15s',
+      flexShrink: 0,
     }}>
       {/* Stage header */}
       <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>

@@ -1,0 +1,303 @@
+<title>Payment decline anomaly detection — executive brief</title>
+<style>
+:root {
+  --ink: #1b2430;
+  --ink-soft: #4b5563;
+  --paper: #f6f4ee;
+  --card: #fcfbf7;
+  --line: #d8d3c4;
+  --accent: #2c6e6b;
+  --accent-ink: #16403e;
+  --accent-soft: #dce8e6;
+  --sev-critical: #a4402a;
+  --sev-critical-soft: #f3e1db;
+  --sev-watch: #93701f;
+  --sev-watch-soft: #f0e6cd;
+  --muted: #6b6a5f;
+  --font-display: Iowan Old Style, "Palatino Linotype", Palatino, Georgia, serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #eae7dc;
+    --ink-soft: #b7b4a8;
+    --paper: #12161a;
+    --card: #171c20;
+    --line: #2b302c;
+    --accent: #7ab8b3;
+    --accent-ink: #cfe9e6;
+    --accent-soft: rgba(122,184,179,0.14);
+    --sev-critical: #de8770;
+    --sev-critical-soft: rgba(222,135,112,0.14);
+    --sev-watch: #d9b158;
+    --sev-watch-soft: rgba(217,177,88,0.14);
+    --muted: #9a9890;
+  }
+}
+:root[data-theme="dark"] {
+  --ink: #eae7dc; --ink-soft: #b7b4a8; --paper: #12161a; --card: #171c20; --line: #2b302c;
+  --accent: #7ab8b3; --accent-ink: #cfe9e6; --accent-soft: rgba(122,184,179,0.14);
+  --sev-critical: #de8770; --sev-critical-soft: rgba(222,135,112,0.14);
+  --sev-watch: #d9b158; --sev-watch-soft: rgba(217,177,88,0.14); --muted: #9a9890;
+}
+:root[data-theme="light"] {
+  --ink: #1b2430; --ink-soft: #4b5563; --paper: #f6f4ee; --card: #fcfbf7; --line: #d8d3c4;
+  --accent: #2c6e6b; --accent-ink: #16403e; --accent-soft: #dce8e6;
+  --sev-critical: #a4402a; --sev-critical-soft: #f3e1db;
+  --sev-watch: #93701f; --sev-watch-soft: #f0e6cd; --muted: #6b6a5f;
+}
+* { box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font-family: var(--font-body); }
+.page { max-width: 760px; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; text-wrap: balance; margin: 0; color: var(--ink); }
+.eyebrow { font-family: var(--font-body); font-size: 12px; letter-spacing: 0.11em; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+p { color: var(--ink-soft); line-height: 1.7; font-size: 15.5px; max-width: 62ch; }
+.hairline { border: none; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.25rem 1.4rem; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th { text-align: left; font-weight: 600; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); padding: 6px 10px; border-bottom: 1px solid var(--line); }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--ink); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+.twrap { overflow-x: auto; }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 100px; }
+.pill-critical { background: var(--sev-critical-soft); color: var(--sev-critical); }
+.pill-watch { background: var(--sev-watch-soft); color: var(--sev-watch); }
+.bar-track { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+.bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.funnel-row { display: flex; align-items: center; gap: 14px; padding: 10px 0; }
+.funnel-label { width: 190px; flex-shrink: 0; font-size: 13.5px; color: var(--ink); }
+.funnel-bar-wrap { flex: 1; min-width: 0; }
+.funnel-value { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); margin-top: 2px; }
+pre { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; overflow-x: auto; margin: 1rem 0 0; }
+pre code { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65; color: var(--ink); white-space: pre; }
+.kw { color: var(--accent); }
+.cm { color: var(--muted); font-style: italic; }
+.code-label { font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin: 1.5rem 0 0; }
+</style>
+
+<div class="page">
+
+<p class="eyebrow">Payment risk operations &middot; internal brief</p>
+<h1 style="font-size: 34px; margin-top: 10px; line-height: 1.15;">A three-tier answer to 9,600 possible failure modes</h1>
+<p style="margin-top: 14px; font-size: 16.5px;">How a five-week synthetic decline dataset validated a monitoring design that finds a rate spike, a masked shift, and a low-volume break &mdash; without pre-building a single monitor for any of them.</p>
+
+<hr class="hairline">
+
+<p class="eyebrow">The data foundation</p>
+<h2 style="font-size: 22px; margin-top: 10px;">6.89 million individual transactions, compressed at every stage</h2>
+<p style="margin-top: 10px;">The 52,920 figure is not a transaction count &mdash; it is the number of aggregated (hour &times; cell) rows. Each row's <span class="num">total_count</span> column holds the actual individual transactions attempted in that hour, for that context. Summed across all 52,920 rows, five weeks of history represent <span class="num">6,890,626</span> individual transactions, of which <span class="num">96,429</span> declined. In the single current window &mdash; Monday 14:00 &mdash; that's <span class="num">17,658</span> individual transactions across the 63 active cells, <span class="num">405</span> of them declines.</p>
+
+<div class="card" style="margin-top: 1.25rem;">
+  <div class="funnel-row" style="padding-top: 0;">
+    <div class="funnel-label">Raw transactions, 5 weeks</div>
+    <div class="funnel-bar-wrap">
+      <div class="bar-track"><div class="bar-fill" style="width: 100%;"></div></div>
+      <div class="funnel-value">6,890,626 individual transactions &mdash; 96,429 declines</div>
+    </div>
+  </div>
+  <div class="funnel-row">
+    <div class="funnel-label">Aggregated to hourly rows</div>
+    <div class="funnel-bar-wrap">
+      <div class="bar-track"><div class="bar-fill" style="width: 0.77%;"></div></div>
+      <div class="funnel-value">52,920 rows &mdash; one per (hour &times; cell) combination</div>
+    </div>
+  </div>
+  <div class="funnel-row">
+    <div class="funnel-label">Grouped by 7 dimensions</div>
+    <div class="funnel-bar-wrap">
+      <div class="bar-track"><div class="bar-fill" style="width: 0.001%;"></div></div>
+      <div class="funnel-value">63 distinct cells discovered &mdash; not the 9,600 theoretical combinations</div>
+    </div>
+  </div>
+  <div class="funnel-row" style="padding-bottom: 0;">
+    <div class="funnel-label">Current window only</div>
+    <div class="funnel-bar-wrap">
+      <div class="bar-track"><div class="bar-fill" style="width: 0.26%;"></div></div>
+      <div class="funnel-value">17,658 transactions, 63 cells active Monday 14:00 &mdash; the only data any stage evaluates live</div>
+    </div>
+  </div>
+</div>
+<p style="margin-top: 0.9rem; font-size: 13.5px;">No cell list is hand-maintained. A <span class="num">GROUP BY</span> on the seven dimension columns, run against the raw data with zero prior knowledge of what exists, rediscovers the same 63 cells. Cost tracks real traffic, not the theoretical combination space &mdash; a schema that technically allows 9,600 combinations still only ever materializes rows for the ones that occur.</p>
+
+<p class="code-label">Sample rows &mdash; raw_declines, current window</p>
+<div class="twrap">
+<table>
+<tr><th>week</th><th>day</th><th>hour</th><th>network</th><th>geography</th><th>entry_mode</th><th>purchase_type</th><th>channel</th><th>decline_code</th><th>total_count</th><th>decline_count</th></tr>
+<tr><td class="num">0</td><td class="num">0</td><td class="num">14</td><td>VISA</td><td>INTERNATIONAL</td><td>TAP</td><td>NORMAL</td><td>CARD_PRESENT</td><td>NSF</td><td class="num">85</td><td class="num">35</td></tr>
+<tr><td class="num">0</td><td class="num">0</td><td class="num">14</td><td>MC</td><td>DOMESTIC</td><td>PIN</td><td>CASHBACK</td><td>CARD_PRESENT</td><td>WRONG_PIN</td><td class="num">133</td><td class="num">78</td></tr>
+<tr><td class="num">0</td><td class="num">0</td><td class="num">14</td><td>AMEX</td><td>INTERNATIONAL</td><td>WALLET</td><td>NORMAL</td><td>ECOM</td><td>CVV_MISMATCH</td><td class="num">33</td><td class="num">32</td></tr>
+</table>
+</div>
+<p style="margin-top: 0.6rem; font-size: 13px; color: var(--muted);">The three rows behind every anomaly referenced below &mdash; one hourly window each, 52,920 like them in the full table.</p>
+
+<hr class="hairline">
+
+<p class="eyebrow">Historical comparison method</p>
+<h2 style="font-size: 22px; margin-top: 10px;">Every one of the 63 cells is judged against its own history</h2>
+<p style="margin-top: 10px;">The current window &mdash; week 0, Monday, 14:00 &mdash; is compared to the same day-of-week and hour in weeks &minus;1 through &minus;4. Four historical points per cell set a mean and standard deviation; the current point's distance from that mean, in standard deviations, is the z-score every stage is built on. A cell with no history at all is flagged outright (<span class="num">z = 99</span>) rather than ignored.</p>
+
+<p style="margin-top: 0.9rem; font-size: 13.5px;">Each stage below runs as two plain queries &mdash; current window, then historical window &mdash; with no join between them. Aggregation stays in SQL; the mean, standard deviation, and z-score are one small computation downstream, in whatever layer already holds both result sets.</p>
+
+<div class="card" style="margin-top: 1rem; background: var(--accent-soft); border-color: var(--accent);">
+<p style="margin: 0; font-size: 13.5px; color: var(--ink);">Design choice, not a fixed pipeline &mdash; once the two queries return, scoring is swappable. This brief uses <strong style="font-weight: 500;">z-score</strong> throughout; the same current-window and historical-window result sets feed equally well into an <strong style="font-weight: 500;">isolation forest</strong> or <strong style="font-weight: 500;">local outlier factor</strong> model if the cell population gets large enough, or noisy enough, that a univariate threshold stops being trustworthy.</p>
+</div>
+
+<hr class="hairline">
+
+<p class="eyebrow">Stage 1</p>
+<h2 style="font-size: 22px; margin-top: 10px;">Roll-up WoW z-score &mdash; 63 cells collapse to 18 monitors</h2>
+<p style="margin-top: 10px;">Cells are summed by decline code &times; channel only, discarding network, geography, entry mode, purchase type, and auth type. Cheap, coarse, and the first line of defense &mdash; it catches a spike large enough to survive being diluted across every other row in its bucket.</p>
+
+<p class="code-label">SQL &mdash; query 1, current window</p>
+<pre><code><span class="kw">SELECT</span> decline_code, channel,
+       <span class="kw">SUM</span>(total_count) <span class="kw">AS</span> total,
+       <span class="kw">SUM</span>(decline_count) <span class="kw">AS</span> declines
+<span class="kw">FROM</span> raw_declines
+<span class="kw">WHERE</span> week = 0 <span class="kw">AND</span> day_of_week = 0 <span class="kw">AND</span> hour = 14
+<span class="kw">GROUP BY</span> decline_code, channel;
+<span class="cm">-- 18 rows: one per (decline_code, channel) monitor</span></code></pre>
+
+<p class="code-label">SQL &mdash; query 2, prior 4 weeks, same slot</p>
+<pre><code><span class="kw">SELECT</span> week, decline_code, channel,
+       <span class="kw">SUM</span>(total_count) <span class="kw">AS</span> total,
+       <span class="kw">SUM</span>(decline_count) <span class="kw">AS</span> declines
+<span class="kw">FROM</span> raw_declines
+<span class="kw">WHERE</span> week > 0 <span class="kw">AND</span> day_of_week = 0 <span class="kw">AND</span> hour = 14
+<span class="kw">GROUP BY</span> week, decline_code, channel;
+<span class="cm">-- 72 rows: 18 monitors &times; 4 weeks. Mean, std, and z-score computed downstream.</span></code></pre>
+
+<div class="twrap" style="margin-top: 1rem;">
+<table>
+<tr><th>Monitor</th><th>Current rate</th><th>4-week baseline</th><th>Z-score</th><th>Status</th></tr>
+<tr><td>CVV_MISMATCH &times; ECOM</td><td class="num">4.82%</td><td class="num">1.27%</td><td class="num">61.4</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>WRONG_PIN &times; CARD_PRESENT</td><td class="num">8.12%</td><td class="num">3.31%</td><td class="num">12.5</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>NSF &times; CARD_PRESENT</td><td class="num">2.60%</td><td class="num">2.04%</td><td class="num">11.3</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>15 other monitors</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">&lt; 2.0</td><td style="color: var(--muted);">Within range</td></tr>
+</table>
+</div>
+<p style="margin-top: 0.9rem; font-size: 13.5px;">18 monitors evaluated, 3 alerted. Each alerted monitor is a sum of 5&ndash;18 raw rows &mdash; the underlying anomaly was strong enough to move the aggregate despite that dilution.</p>
+
+<hr class="hairline">
+
+<p class="eyebrow">Stage 2</p>
+<h2 style="font-size: 22px; margin-top: 10px;">Contribution shift &mdash; two queries, all 63 cells, no monitor list</h2>
+<p style="margin-top: 10px;">Instead of a rate, each cell's share of the window's <span class="num">405</span> total declines is compared to its own historical share. Because share is zero-sum, three cells absorbing a disproportionate slice forces every other cell's share down &mdash; even when nothing changed in its own volume.</p>
+
+<p class="code-label">SQL &mdash; query 1, current window</p>
+<pre><code><span class="kw">SELECT</span> network, geography, entry_mode, purchase_type, auth_type, channel, decline_code,
+       <span class="kw">SUM</span>(decline_count) <span class="kw">AS</span> decline_count
+<span class="kw">FROM</span> raw_declines
+<span class="kw">WHERE</span> week = 0 <span class="kw">AND</span> day_of_week = 0 <span class="kw">AND</span> hour = 14
+<span class="kw">GROUP BY</span> 1,2,3,4,5,6,7;
+<span class="cm">-- 63 rows: one per active cell. Divide each by the column sum for contribution_pct.</span></code></pre>
+
+<p class="code-label">SQL &mdash; query 2, prior 4 weeks, same slot</p>
+<pre><code><span class="kw">SELECT</span> week, network, geography, entry_mode, purchase_type, auth_type, channel, decline_code,
+       <span class="kw">SUM</span>(decline_count) <span class="kw">AS</span> decline_count
+<span class="kw">FROM</span> raw_declines
+<span class="kw">WHERE</span> week > 0 <span class="kw">AND</span> day_of_week = 0 <span class="kw">AND</span> hour = 14
+<span class="kw">GROUP BY</span> 1,2,3,4,5,6,7,8;
+<span class="cm">-- ~252 rows: up to 63 cells &times; 4 weeks. Contribution share, mean, std, and</span>
+<span class="cm">-- z-score computed downstream from these two result sets, no join needed.</span></code></pre>
+
+<div class="twrap" style="margin-top: 1rem;">
+<table>
+<tr><th>Cell</th><th>Current share</th><th>Baseline share</th><th>Z-score</th><th>Status</th></tr>
+<tr><td>VISA &times; INTL &times; TAP &times; NSF</td><td class="num">8.64%</td><td class="num">0.72%</td><td class="num">419.2</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>MC &times; DOM &times; PIN CASHBACK &times; WRONG_PIN</td><td class="num">19.26%</td><td class="num">2.08%</td><td class="num">91.4</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>AMEX &times; INTL &times; WALLET &times; CVV_MISMATCH</td><td class="num">7.90%</td><td class="num">0.63%</td><td class="num">40.0</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>21 other cells</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">&minus;3 to &minus;12</td><td><span class="pill pill-watch">Squeezed</span></td></tr>
+</table>
+</div>
+<p style="margin-top: 0.9rem; font-size: 13.5px;">63 active cells, 24 alerts. Only 3 represent real deterioration; the remaining 21 lost share purely because the pie has a fixed size &mdash; a distinction worth keeping in any paging policy built on this stage alone.</p>
+
+<hr class="hairline">
+
+<p class="eyebrow">Stage 3</p>
+<h2 style="font-size: 22px; margin-top: 10px;">Full-granularity WoW &mdash; every cell judged alone</h2>
+<p style="margin-top: 10px;">No roll-up, no shared pool. Each of the 63 cells is compared only to its own four-week trail at the same day and hour. This is the only stage where a cell's own decline rate, not an aggregate or a share, is the basis for the alert &mdash; and the only stage where all three injected anomalies register with maximum separation from noise.</p>
+
+<p class="code-label">SQL &mdash; query 1, current window</p>
+<pre><code><span class="kw">SELECT</span> network, geography, entry_mode, purchase_type, auth_type, channel, decline_code,
+       total_count, decline_count
+<span class="kw">FROM</span> raw_declines
+<span class="kw">WHERE</span> week = 0 <span class="kw">AND</span> day_of_week = 0 <span class="kw">AND</span> hour = 14;
+<span class="cm">-- 63 rows: every active cell, no roll-up, no aggregation</span></code></pre>
+
+<p class="code-label">SQL &mdash; query 2, prior 4 weeks, same slot</p>
+<pre><code><span class="kw">SELECT</span> week, network, geography, entry_mode, purchase_type, auth_type, channel, decline_code,
+       total_count, decline_count
+<span class="kw">FROM</span> raw_declines
+<span class="kw">WHERE</span> week > 0 <span class="kw">AND</span> day_of_week = 0 <span class="kw">AND</span> hour = 14;
+<span class="cm">-- ~252 rows: up to 63 cells &times; 4 weeks. Rate, mean, std, and z-score</span>
+<span class="cm">-- computed downstream, same shape as stages 1 and 2.</span></code></pre>
+
+<div class="twrap" style="margin-top: 1rem;">
+<table>
+<tr><th>Cell</th><th>Current rate</th><th>4-week baseline</th><th>Z-score</th><th>Status</th></tr>
+<tr><td>VISA &times; INTL &times; TAP &times; NSF</td><td class="num">41.18%</td><td class="num">2.21%</td><td class="num">487.1</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>MC &times; DOM &times; PIN CASHBACK &times; WRONG_PIN</td><td class="num">58.65%</td><td class="num">3.28%</td><td class="num">372.8</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>AMEX &times; INTL &times; WALLET &times; CVV_MISMATCH</td><td class="num">96.97%</td><td class="num">5.22%</td><td class="num">62.1</td><td><span class="pill pill-critical">Alert</span></td></tr>
+<tr><td>3 mild movers</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">3.2 &ndash; 6.2</td><td><span class="pill pill-watch">Watch</span></td></tr>
+<tr><td>2 below-baseline cells</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">&minus;5.3, &minus;9.6</td><td><span class="pill pill-watch">Watch</span></td></tr>
+</table>
+</div>
+<p style="margin-top: 0.9rem; font-size: 13.5px;">63 active cells, 8 alerts. The same VISA anomaly that scored z&#8202;=&#8202;11.3 diluted inside an 18-row Stage 1 roll-up scores z&#8202;=&#8202;487 here &mdash; isolation removes the noise floor a shared aggregate imposes.</p>
+
+<hr class="hairline">
+
+<p class="eyebrow">Worked example</p>
+<h2 style="font-size: 22px; margin-top: 10px;">One cell, two opposite verdicts</h2>
+<p style="margin-top: 10px;"><span class="num">MC &times; DOMESTIC &times; EMV &times; DO_NOT_HONOR</span> appears in both Stage 2's and Stage 3's alert list this window &mdash; with opposite signs. Both are correct. They answer different questions from the same 11 declines.</p>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 1.1rem;">
+
+<div class="card">
+  <p class="code-label" style="margin-top: 0; color: var(--accent-ink);">Stage 2 &mdash; a cross-row sum</p>
+  <p style="font-size: 13.5px; margin: 8px 0 10px;">Divide this cell's declines by the sum of <span class="num">decline_count</span> across all 63 rows.</p>
+  <div style="font-family: var(--font-mono); font-size: 13px; line-height: 2; color: var(--ink);">
+    this cell &nbsp;<span class="num">11</span><br>
+    &divide; all 63 rows &nbsp;<span class="num">405</span><br>
+    <span style="color: var(--muted);">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;</span><br>
+    = share &nbsp;<span class="num">2.72%</span> <span style="color: var(--muted); font-family: var(--font-body);">vs 3.26% baseline</span>
+  </div>
+  <p style="margin: 10px 0 0; font-size: 13px;"><span class="pill pill-watch">z = &minus;6.36</span> &mdash; share fell, because 3 other cells absorbed the pie</p>
+</div>
+
+<div class="card">
+  <p class="code-label" style="margin-top: 0; color: var(--accent-ink);">Stage 3 &mdash; a single row's own value</p>
+  <p style="font-size: 13.5px; margin: 8px 0 10px;">Divide this cell's own declines by this cell's own <span class="num">total_count</span>. No other row involved.</p>
+  <div style="font-family: var(--font-mono); font-size: 13px; line-height: 2; color: var(--ink);">
+    this cell &nbsp;<span class="num">11</span><br>
+    &divide; this cell only &nbsp;<span class="num">564</span><br>
+    <span style="color: var(--muted);">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;</span><br>
+    = rate &nbsp;<span class="num">1.95%</span> <span style="color: var(--muted); font-family: var(--font-body);">vs 1.56% baseline</span>
+  </div>
+  <p style="margin: 10px 0 0; font-size: 13px;"><span class="pill pill-critical">z = +3.19</span> &mdash; this cell's own rate genuinely rose</p>
+</div>
+
+</div>
+<p style="margin-top: 0.9rem; font-size: 13.5px;">405 only exists because Stage 2 needs a whole-window denominator &mdash; it's the sum of every row's declines, so it moves whenever <em>any</em> cell moves. 564 never leaves this one row &mdash; it's this cell's own transaction count, untouched by what the other 62 cells do. That's the entire mechanical reason the two stages can disagree on the same 11 declines.</p>
+
+<hr class="hairline">
+
+<p class="eyebrow">Read across the three stages</p>
+<h2 style="font-size: 22px; margin-top: 10px;">Same three anomalies, three different vantage points</h2>
+<div class="twrap" style="margin-top: 1rem;">
+<table>
+<tr><th>Anomaly</th><th>Stage 1 z</th><th>Stage 2 z</th><th>Stage 3 z</th></tr>
+<tr><td>VISA &middot; Intl &middot; TAP &middot; NSF</td><td class="num">11.3</td><td class="num">419.2</td><td class="num">487.1</td></tr>
+<tr><td>MC &middot; Dom &middot; PIN Cashback &middot; WRONG_PIN</td><td class="num">12.5</td><td class="num">91.4</td><td class="num">372.8</td></tr>
+<tr><td>AMEX &middot; Intl &middot; Wallet &middot; CVV_MISMATCH</td><td class="num">61.4</td><td class="num">40.0</td><td class="num">62.1</td></tr>
+</table>
+</div>
+<p style="margin-top: 0.9rem;">All three anomalies were caught by every stage in this dataset &mdash; a property of how sharply they were injected, not a guarantee. The design reasoning holds independent of that: Stage 1 is cheap insurance against large spikes, Stage 2 catches share shifts a rate-only view would miss, and Stage 3 is the only stage that isolates a low-volume cell from any pooling effect at all.</p>
+
+<hr class="hairline">
+
+<p class="eyebrow">Bottom line</p>
+<p style="font-size: 15.5px; max-width: 62ch;">No stage requires knowing in advance which of the 9,600 theoretical combinations will matter. All three discover their working set &mdash; 18 monitors, 63 cells, 63 cells &mdash; directly from what the current window's data contains, then spend their statistical budget only on what showed up.</p>
+
+</div>

@@ -7,15 +7,15 @@ import java.util.List;
  * z-score of the current value against them. Kept separate from aggregation
  * on purpose -- the queries only group and sum, this is where "how far off
  * is this?" gets decided. */
-final class WowMath {
+public final class WowMath {
     private WowMath() {}
 
-    static double mean(List<Double> values) {
+    public static double mean(List<Double> values) {
         return values.stream().mapToDouble(Double::doubleValue).average().orElse(0);
     }
 
     /** pandas .std() default: sample standard deviation, ddof=1 */
-    static double std(List<Double> values) {
+    public static double std(List<Double> values) {
         if (values.size() <= 1) return 0;
         double m = mean(values);
         double sumSq = values.stream().mapToDouble(v -> (v - m) * (v - m)).sum();
@@ -23,12 +23,12 @@ final class WowMath {
     }
 
     /** No history at all -> flagged outright with the z=99 sentinel, matching the Python stages. */
-    static double zScore(double current, List<Double> history, double stdFloor) {
+    public static double zScore(double current, List<Double> history, double stdFloor) {
         if (history.isEmpty()) return 99.0;
         return (current - mean(history)) / Math.max(std(history), stdFloor);
     }
 
-    static double round(double v, int places) {
+    public static double round(double v, int places) {
         double f = Math.pow(10, places);
         return Math.round(v * f) / f;
     }
