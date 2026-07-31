@@ -142,10 +142,25 @@ public class PaymentDataGenerator {
         for (int d = 0; d < 7; d++) DAY_MULT.put(d, dayMultVals[d]);
     }
 
+    /** Grouping key: everything but decline_code — different decline codes on the
+     * same transaction context are different ways the SAME pool of transactions
+     * can fail, so they must share one total_count per (week, day, hour). */
+    private static String groupKey(Cell c) {
+        return c.network + "|" + c.geography + "|" + c.entryMode + "|" + c.purchaseType + "|" + c.authType + "|" + c.channel;
+    }
+
     public static List<PaymentRow> generate(long seed) {
         RandomState rng = new RandomState(seed);
         Map<String, AnomalyDef> anomalyMap = new HashMap<>();
         for (AnomalyDef a : ANOMALY_DEFS) anomalyMap.put(a.keyStr(), a);
+
+        LinkedHashMap<String, List<Cell>> groups = new LinkedHashMap<>();
+        Map<String, Integer> groupBaseVol = new HashMap<>();
+        for (Cell cell : CELLS) {
+            String gkey = groupKey(cell);
+            groups.computeIfAbsent(gkey, k -> new ArrayList<>()).add(cell);
+            groupBaseVol.merge(gkey, cell.baseVol, Math::max);
+        }
 
         List<PaymentRow> rows = new ArrayList<>();
         for (int week = 0; week < 5; week++) {
@@ -155,21 +170,25 @@ public class PaymentDataGenerator {
                     double d = DAY_MULT.get(day);
                     double w = 1.0 + rng.normal(0, 0.03);
 
-                    for (Cell cell : CELLS) {
-                        int total = Math.max(0, (int) (cell.baseVol * h * d * w * (1 + rng.normal(0, 0.08))));
-                        double rate = clip(cell.baseRate * (1 + rng.normal(0, 0.12)), 0.001, 0.95);
+                    for (Map.Entry<String, List<Cell>> entry : groups.entrySet()) {
+                        int baseVol = groupBaseVol.get(entry.getKey());
+                        int total = Math.max(0, (int) (baseVol * h * d * w * (1 + rng.normal(0, 0.08))));
 
-                        boolean isAnomalyWindow = (week == 0 && day == CURRENT_DAY && hour == CURRENT_HOUR);
-                        if (isAnomalyWindow && anomalyMap.containsKey(cell.key())) {
-                            rate = clip(rate * anomalyMap.get(cell.key()).multiplier, 0, 0.98);
+                        for (Cell cell : entry.getValue()) {
+                            double rate = clip(cell.baseRate * (1 + rng.normal(0, 0.12)), 0.001, 0.95);
+
+                            boolean isAnomalyWindow = (week == 0 && day == CURRENT_DAY && hour == CURRENT_HOUR);
+                            if (isAnomalyWindow && anomalyMap.containsKey(cell.key())) {
+                                rate = clip(rate * anomalyMap.get(cell.key()).multiplier, 0, 0.98);
+                            }
+
+                            int declineCount = (int) clip(total * rate, 0, total);
+                            double declineRate = total > 0 ? Math.round(((double) declineCount / total) * 1e6) / 1e6 : 0.0;
+
+                            rows.add(new PaymentRow(week, day, hour, cell.network, cell.geography, cell.entryMode,
+                                    cell.purchaseType, cell.authType, cell.channel, cell.declineCode,
+                                    total, declineCount, declineRate));
                         }
-
-                        int declineCount = (int) clip(total * rate, 0, total);
-                        double declineRate = total > 0 ? Math.round(((double) declineCount / total) * 1e6) / 1e6 : 0.0;
-
-                        rows.add(new PaymentRow(week, day, hour, cell.network, cell.geography, cell.entryMode,
-                                cell.purchaseType, cell.authType, cell.channel, cell.declineCode,
-                                total, declineCount, declineRate));
                     }
                 }
             }

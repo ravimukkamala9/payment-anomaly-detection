@@ -132,8 +132,25 @@ CURRENT_HOUR = 14  # 14:00
 def generate_payment_data(seed: int = 42) -> pd.DataFrame:
     rng = np.random.RandomState(seed)
     anomaly_map = {a['key']: a for a in ANOMALY_DEFS}
-    rows = []
 
+    # Group decline codes by their shared transaction context (everything but
+    # decline_code). All decline codes in the same context are different ways
+    # the SAME pool of transactions can fail, so they must share one
+    # total_count per (week, day, hour) rather than each drawing its own.
+    groups: dict = {}
+    group_base_vol: dict = {}
+    group_order = []
+    for net, geo, entry, ptype, auth, ch, code, base_vol, base_rate in CELLS:
+        gkey = (net, geo, entry, ptype, auth, ch)
+        if gkey not in groups:
+            groups[gkey] = []
+            group_order.append(gkey)
+            group_base_vol[gkey] = base_vol
+        else:
+            group_base_vol[gkey] = max(group_base_vol[gkey], base_vol)
+        groups[gkey].append((code, base_rate))
+
+    rows = []
     for week in range(5):           # 0=current, 1-4=historical
         for day in range(7):
             for hour in range(24):
@@ -141,33 +158,35 @@ def generate_payment_data(seed: int = 42) -> pd.DataFrame:
                 d = DAY_MULT[day]
                 w = 1.0 + rng.normal(0, 0.03)  # slight weekly variation
 
-                for cell in CELLS:
-                    net, geo, entry, ptype, auth, ch, code, base_vol, base_rate = cell
-                    cell_key = (net, geo, entry, ptype, auth, ch, code)
-
+                for gkey in group_order:
+                    net, geo, entry, ptype, auth, ch = gkey
+                    base_vol = group_base_vol[gkey]
                     total = max(0, int(base_vol * h * d * w * (1 + rng.normal(0, 0.08))))
-                    rate = float(np.clip(base_rate * (1 + rng.normal(0, 0.12)), 0.001, 0.95))
 
-                    is_anomaly_window = (week == 0 and day == CURRENT_DAY and hour == CURRENT_HOUR)
-                    if is_anomaly_window and cell_key in anomaly_map:
-                        rate = float(np.clip(rate * anomaly_map[cell_key]['multiplier'], 0, 0.98))
+                    for code, base_rate in groups[gkey]:
+                        cell_key = (net, geo, entry, ptype, auth, ch, code)
+                        rate = float(np.clip(base_rate * (1 + rng.normal(0, 0.12)), 0.001, 0.95))
 
-                    decline_count = int(np.clip(total * rate, 0, total))
-                    rows.append({
-                        'week': week,
-                        'day_of_week': day,
-                        'hour': hour,
-                        'network': net,
-                        'geography': geo,
-                        'entry_mode': entry,
-                        'purchase_type': ptype,
-                        'auth_type': auth,
-                        'channel': ch,
-                        'decline_code': code,
-                        'total_count': total,
-                        'decline_count': decline_count,
-                        'decline_rate': round(decline_count / total, 6) if total > 0 else 0.0,
-                    })
+                        is_anomaly_window = (week == 0 and day == CURRENT_DAY and hour == CURRENT_HOUR)
+                        if is_anomaly_window and cell_key in anomaly_map:
+                            rate = float(np.clip(rate * anomaly_map[cell_key]['multiplier'], 0, 0.98))
+
+                        decline_count = int(np.clip(total * rate, 0, total))
+                        rows.append({
+                            'week': week,
+                            'day_of_week': day,
+                            'hour': hour,
+                            'network': net,
+                            'geography': geo,
+                            'entry_mode': entry,
+                            'purchase_type': ptype,
+                            'auth_type': auth,
+                            'channel': ch,
+                            'decline_code': code,
+                            'total_count': total,
+                            'decline_count': decline_count,
+                            'decline_rate': round(decline_count / total, 6) if total > 0 else 0.0,
+                        })
 
     return pd.DataFrame(rows)
 
