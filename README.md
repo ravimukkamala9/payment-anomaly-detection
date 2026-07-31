@@ -2,21 +2,12 @@
 
 A full-stack ML anomaly detection system with a real-world **Payment Decline Pipeline** demonstrating hierarchical, week-over-week anomaly detection across thousands of payment cell combinations.
 
-Two interchangeable backend implementations ship side by side:
-
-| | Recommended | Alternative |
-|---|---|---|
-| Stack | **Java 17 / Spring Boot** (`backend-java/`) | Python / FastAPI (`backend/`) |
-| Deploy | One jar serves the API **and** the built React UI on a single port (8000) | Two separate processes — FastAPI on 8000, Vite dev server on 5173 |
-| ML detectors | Z-Score, Isolation Forest and LOF implemented from scratch in Java | Z-Score, Isolation Forest and LOF via scikit-learn |
-| Payment pipeline | Full port — identical formulas, identical JSON | Original implementation |
-
-Both expose the same REST contract, so the React frontend works unmodified against either one.
+Backend is Java 17 / Spring Boot. `mvn clean package` builds the React frontend and embeds it into a single deployable jar that serves both the UI and the REST API on one port.
 
 ## Features
 
 ### Core ML Framework
-- **Z-Score**, **Isolation Forest**, and **Local Outlier Factor (LOF)** detectors
+- **Z-Score**, **Isolation Forest**, and **Local Outlier Factor (LOF)** detectors — implemented from scratch in Java
 - Side-by-side comparison with precision, recall, F1, and confusion matrix metrics
 - Upload your own CSV dataset for analysis
 - 7-step interactive learning/tutorial mode explaining each algorithm
@@ -38,16 +29,17 @@ See [docs/payment_anomaly_brief.html](docs/payment_anomaly_brief.html) for an ex
 
 | Layer | Technology |
 |-------|-----------|
-| Backend (recommended) | Java 17, Spring Boot 3.3, Maven |
-| Backend (alternative) | FastAPI, scikit-learn, pandas, numpy |
+| Backend | Java 17, Spring Boot 3.3, Maven |
 | Frontend | React, Vite, TypeScript, Plotly.js |
 
-## Getting Started — Java (single jar, recommended)
+## Getting Started
 
 ### Prerequisites
 - JDK 17+
 - Maven 3.8+
-- Internet access on first build (pulls a local Node/npm to build the frontend)
+- Internet access on first build (Maven pulls a local Node/npm to build the frontend)
+
+### Build and run
 
 ```bash
 cd backend-java
@@ -55,27 +47,9 @@ mvn clean package
 java -jar target/backend-java-1.0.0.jar
 ```
 
-Open [http://localhost:8000](http://localhost:8000) — UI and API served from the same process and port. See [backend-java/README.md](backend-java/README.md) for build internals and API routes (mounted under `/api`).
+Open [http://localhost:8000](http://localhost:8000) — UI and API served from the same process and port.
 
-## Getting Started — Python + Vite (alternative, two processes)
-
-### Prerequisites
-- Python 3.9+
-- Node.js 18+
-
-```bash
-# Terminal 1 — backend
-cd backend
-pip install fastapi uvicorn pandas numpy scikit-learn scipy python-multipart
-uvicorn main:app --reload
-
-# Terminal 2 — frontend
-cd frontend
-npm install
-npm run dev
-```
-
-Open [http://localhost:5173](http://localhost:5173)
+See [backend-java/README.md](backend-java/README.md) for build internals and the full list of API routes (mounted under `/api`).
 
 ## Payment Pipeline Demo
 
@@ -98,27 +72,13 @@ Open [http://localhost:5173](http://localhost:5173)
 anomaly-detection/
 ├── docs/
 │   └── payment_anomaly_brief.html       # Executive brief with worked examples
-├── backend-java/                        # Recommended: Java Spring Boot, single jar
+├── backend-java/                        # Java Spring Boot, single jar
 │   ├── pom.xml                          # Also builds & embeds the React frontend
 │   └── src/main/java/com/anomalydetection/
 │       ├── controller/                  # /api/health, /analyze, /payment/*
 │       ├── detectors/                   # Z-Score, Isolation Forest, LOF (from scratch)
 │       └── payment/                     # PaymentDataGenerator, Stage1/2/3
-├── backend/                             # Alternative: Python FastAPI
-│   ├── main.py
-│   ├── detectors/
-│   │   ├── zscore.py
-│   │   ├── isolation_forest.py
-│   │   └── lof.py
-│   ├── stages/
-│   │   ├── stage1_rollup_wow.py         # Roll-up WoW Z-Score
-│   │   ├── stage2_contribution.py       # Contribution Shift Monitor
-│   │   └── stage3_wow_granular.py       # Full-granularity WoW Z-Score
-│   └── utils/
-│       ├── data_processor.py
-│       ├── metrics.py
-│       └── payment_data_generator.py    # 52,920-row synthetic dataset
-└── frontend/                            # React UI — shared by both backends
+└── frontend/                            # React UI, built and embedded by backend-java
     └── src/
         ├── pages/
         │   ├── PaymentPipelinePage.tsx
