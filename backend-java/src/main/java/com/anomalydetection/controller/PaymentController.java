@@ -167,6 +167,18 @@ public class PaymentController {
         return ResponseEntity.ok(HistoricalAnalysis.run(paymentDf));
     }
 
+    /** Three independently-owned contribution-shift heads over smaller
+     * dimension subsets than Stage 2's full 7-dim key -- see Stage2Heads.java. */
+    @PostMapping("/stage2-heads")
+    public ResponseEntity<?> stage2Heads(@RequestParam(defaultValue = "3.0") double threshold) {
+        if (paymentDf == null) {
+            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
+        }
+        int cd = PaymentDataGenerator.CURRENT_DAY;
+        int ch = PaymentDataGenerator.CURRENT_HOUR;
+        return ResponseEntity.ok(Stage2Heads.run(paymentDf, cd, ch, threshold));
+    }
+
     /** On-demand only. Given the exact 7-dimension cell a stage has already
      * flagged, breaks it down by diagnostic dimensions (bin, acquirer) that
      * are never part of the continuously-monitored CellKey. */

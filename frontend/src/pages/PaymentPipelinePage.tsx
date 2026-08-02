@@ -5,13 +5,15 @@ import WoWLineChart from '../components/charts/WoWLineChart';
 import RawDataTab from './payment/RawDataTab';
 import ContributionShiftTab from './payment/ContributionShiftTab';
 import HistoricalAnalysisTab from './payment/HistoricalAnalysisTab';
+import Stage2HeadsTab from './payment/Stage2HeadsTab';
 
-type MainTab = 'pipeline' | 'raw' | 'contribution' | 'historical';
+type MainTab = 'pipeline' | 'raw' | 'contribution' | 'historical' | 'heads';
 const MAIN_TABS: { id: MainTab; label: string }[] = [
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'raw', label: 'Raw Data' },
   { id: 'contribution', label: 'Contribution Shift' },
   { id: 'historical', label: 'Historical Analysis' },
+  { id: 'heads', label: 'Stage 2 Heads' },
 ];
 
 const API = '/api';
@@ -245,6 +247,7 @@ export default function PaymentPipelinePage() {
           {mainTab === 'raw' && <RawDataTab />}
           {mainTab === 'contribution' && <ContributionShiftTab />}
           {mainTab === 'historical' && <HistoricalAnalysisTab />}
+          {mainTab === 'heads' && <Stage2HeadsTab />}
         </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
