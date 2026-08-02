@@ -4,7 +4,7 @@ import java.util.*;
 
 import static com.anomalydetection.payment.Dim.*;
 
-/** Stage 2 split into independently-owned heads, each watching a few
+/** Monitoring split into independently-owned heads, each watching a few
  * dimensions instead of all of them.
  *
  * The reason is statistical as much as organizational: one monitor over
@@ -16,6 +16,12 @@ import static com.anomalydetection.payment.Dim.*;
  *
  * decline_code is in every head: contribution share is a share *of
  * declines*, so dropping the reason makes it meaningless.
+ *
+ * Each head runs both jobs a full monitor needs, at its own dimension
+ * subset: ContributionHead (share vs. the rest of the window -- catches
+ * masking) and RateHead (a cell's own rate vs. its own history -- catches
+ * genuine drift regardless of share). Same pairing Stage 2 and Stage 3
+ * provide today at the full 7-dim key.
  *
  * The cost: an anomaly that only shows up as an interaction between two
  * heads' dimensions is invisible to both. DrillDown is the mitigation --
@@ -41,6 +47,7 @@ public class Stage2Heads {
             result.put("owner", h.owner());
             result.put("dims", h.dims().stream().map(Dim::label).toList());
             result.putAll(ContributionHead.run(df, currentDay, currentHour, threshold, h.dims()));
+            result.put("wow", RateHead.run(df, currentDay, currentHour, threshold, h.dims()));
             heads.put(h.key(), result);
         }
         return Map.of("heads", heads);
