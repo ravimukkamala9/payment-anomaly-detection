@@ -15,10 +15,14 @@
     <artifactId>backend-java</artifactId>
     <version>1.0.0</version>
     <name>anomaly-detection-backend-java</name>
-    <description>Recommended backend: Java 17 / Spring Boot, builds and embeds the React frontend into a single deployable jar serving the UI and REST API on one port</description>
+    <description>Recommended backend: Java 21 / Spring Boot, builds and embeds the React frontend into a single deployable jar serving the UI and REST API on one port</description>
 
     <properties>
-        <java.version>23</java.version>
+        <!-- 21 is the current LTS and the newest release this code needs
+             (records, switch expressions, Stream.toList() are all older).
+             Targeting it keeps `mvn clean package` working on any JDK 21+
+             without requiring a JAVA_HOME override. -->
+        <java.version>21</java.version>
         <frontend.dir>${project.basedir}/../frontend</frontend.dir>
     </properties>
 

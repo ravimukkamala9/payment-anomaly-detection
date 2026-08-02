@@ -2,7 +2,7 @@
 
 A full-stack ML anomaly detection system with a real-world **Payment Decline Pipeline** demonstrating hierarchical, week-over-week anomaly detection across thousands of payment cell combinations.
 
-Backend is Java 23 / Spring Boot. `mvn clean package` builds the React frontend and embeds it into a single deployable jar that serves both the UI and the REST API on one port.
+Backend is Java 21 (LTS) / Spring Boot. `mvn clean package` builds the React frontend and embeds it into a single deployable jar that serves both the UI and the REST API on one port.
 
 ## Features
 
@@ -29,13 +29,13 @@ See [docs/payment_anomaly_brief.html](docs/payment_anomaly_brief.html) for an ex
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Java 23, Spring Boot 3.3, Maven |
+| Backend | Java 21 (LTS), Spring Boot 3.3, Maven |
 | Frontend | React, Vite, TypeScript, Plotly.js |
 
 ## Getting Started
 
 ### Prerequisites
-- JDK 23+
+- JDK 21 or newer
 - Maven 3.8+
 - Internet access on first build (Maven pulls a local Node/npm to build the frontend)
 

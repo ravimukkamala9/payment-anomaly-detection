@@ -29,7 +29,7 @@ Isolation Forest and Local Outlier Factor are implemented natively (see
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Java 23 |
+| Language | Java 21 (LTS) |
 | Framework | Spring Boot 3.3 (spring-boot-starter-web) |
 | Build | Maven |
 | JSON | Jackson (bundled with Spring Boot web starter) |
@@ -37,7 +37,7 @@ Isolation Forest and Local Outlier Factor are implemented natively (see
 
 ## Prerequisites
 
-- JDK 23+
+- JDK 21 or newer
 - Maven 3.8+
 - Internet access on first build (frontend-maven-plugin downloads a local Node/npm
   into `../frontend`; npm then installs the frontend's own dependencies)
