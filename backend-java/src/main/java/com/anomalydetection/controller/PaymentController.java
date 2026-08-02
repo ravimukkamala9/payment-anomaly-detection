@@ -166,4 +166,20 @@ public class PaymentController {
         }
         return ResponseEntity.ok(HistoricalAnalysis.run(paymentDf));
     }
+
+    /** On-demand only. Given the exact 7-dimension cell a stage has already
+     * flagged, breaks it down by diagnostic dimensions (bin, acquirer) that
+     * are never part of the continuously-monitored CellKey. */
+    @GetMapping("/drill-down")
+    public ResponseEntity<?> drillDown(
+            @RequestParam int week, @RequestParam int dayOfWeek, @RequestParam int hour,
+            @RequestParam String network, @RequestParam String geography, @RequestParam String entryMode,
+            @RequestParam String purchaseType, @RequestParam String authType,
+            @RequestParam String channel, @RequestParam String declineCode) {
+        if (paymentDf == null) {
+            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
+        }
+        return ResponseEntity.ok(DrillDown.run(paymentDf, week, dayOfWeek, hour,
+                network, geography, entryMode, purchaseType, authType, channel, declineCode));
+    }
 }

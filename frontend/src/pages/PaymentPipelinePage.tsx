@@ -374,12 +374,25 @@ function Stage2Chart({ data }: { data: { cell_short: string; contribution_pct: n
   );
 }
 
+interface DrillDownBreakdown {
+  bin: string; acquirer: string; total_count: number; decline_count: number;
+  decline_rate: number; share_of_cell_declines: number;
+}
+interface DrillDownResult {
+  n_combinations: number; total_declines: number; execution_ms: number;
+  breakdown: DrillDownBreakdown[];
+}
+
 function AlertTable({ alerts, index, color }: { alerts: Record<string, unknown>[]; index: number; color: string }) {
   const cols = index === 0
     ? ['decline_code', 'channel', 'total', 'declines', 'rate', 'wow_mean', 'z_score']
     : index === 1
     ? ['network', 'geography', 'decline_code', 'decline_count', 'contribution_pct', 'hist_mean', 'z_contribution']
     : ['network', 'geography', 'entry_mode', 'decline_code', 'decline_rate', 'wow_mean', 'z_wow', 'n_weeks'];
+
+  const [openRow, setOpenRow] = useState<number | null>(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillResult, setDrillResult] = useState<DrillDownResult | null>(null);
 
   const fmtVal = (k: string, v: unknown) => {
     if (v === null || v === undefined) return '—';
@@ -388,6 +401,25 @@ function AlertTable({ alerts, index, color }: { alerts: Record<string, unknown>[
     if (numericPct.includes(k) && typeof v === 'number') return (v * (k.includes('contribution') ? 100 : 100)).toFixed(2) + '%';
     if (typeof v === 'number') return Math.abs(v) > 10 ? v.toFixed(1) : v.toFixed(3);
     return String(v);
+  };
+
+  const drillDown = async (i: number, row: Record<string, unknown>) => {
+    if (openRow === i) { setOpenRow(null); return; }
+    setOpenRow(i);
+    setDrillLoading(true);
+    setDrillResult(null);
+    try {
+      const params = new URLSearchParams({
+        week: '0', dayOfWeek: '0', hour: '14',
+        network: String(row.network), geography: String(row.geography), entryMode: String(row.entry_mode),
+        purchaseType: String(row.purchase_type), authType: String(row.auth_type),
+        channel: String(row.channel), declineCode: String(row.decline_code),
+      });
+      const res = await fetch(`${API}/payment/drill-down?${params}`);
+      if (res.ok) setDrillResult(await res.json());
+    } finally {
+      setDrillLoading(false);
+    }
   };
 
   return (
@@ -403,25 +435,81 @@ function AlertTable({ alerts, index, color }: { alerts: Record<string, unknown>[
                 {c.replace(/_/g, ' ')}
               </th>
             ))}
+            {index === 1 && <th style={{ padding: '7px 10px', borderBottom: `2px solid ${color}44` }} />}
           </tr>
         </thead>
         <tbody>
           {alerts.map((row, i) => (
-            <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
-              {cols.map(c => {
-                const v = row[c];
-                const isZ = c.startsWith('z_');
-                const zVal = typeof v === 'number' ? Math.abs(v) : 0;
-                return (
-                  <td key={c} style={{
-                    padding: '7px 10px', borderBottom: '1px solid var(--border)',
-                    color: isZ && zVal > 10 ? '#ef4444' : isZ && zVal > 3 ? '#f59e0b' : 'var(--text)',
-                    fontWeight: isZ ? 700 : 400, whiteSpace: 'nowrap', fontFamily: isZ ? 'monospace' : 'inherit',
-                  }}>
-                    {fmtVal(c, v)}
+            <React.Fragment key={i}>
+              <tr style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
+                {cols.map(c => {
+                  const v = row[c];
+                  const isZ = c.startsWith('z_');
+                  const zVal = typeof v === 'number' ? Math.abs(v) : 0;
+                  return (
+                    <td key={c} style={{
+                      padding: '7px 10px', borderBottom: '1px solid var(--border)',
+                      color: isZ && zVal > 10 ? '#ef4444' : isZ && zVal > 3 ? '#f59e0b' : 'var(--text)',
+                      fontWeight: isZ ? 700 : 400, whiteSpace: 'nowrap', fontFamily: isZ ? 'monospace' : 'inherit',
+                    }}>
+                      {fmtVal(c, v)}
+                    </td>
+                  );
+                })}
+                {index === 1 && (
+                  <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                    <button onClick={() => drillDown(i, row)} style={{
+                      fontSize: 10, fontWeight: 600, padding: '4px 8px', borderRadius: 5,
+                      background: openRow === i ? color + '22' : 'var(--surface2)',
+                      color: openRow === i ? color : 'var(--text-muted)', border: `1px solid ${openRow === i ? color : 'var(--border)'}`,
+                    }}>
+                      {openRow === i ? 'Hide' : 'Drill down'}
+                    </button>
                   </td>
-                );
-              })}
+                )}
+              </tr>
+              {index === 1 && openRow === i && (
+                <tr>
+                  <td colSpan={cols.length + 1} style={{ padding: '10px 10px 14px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.15)' }}>
+                    <DrillDownPanel loading={drillLoading} result={drillResult} />
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DrillDownPanel({ loading, result }: { loading: boolean; result: DrillDownResult | null }) {
+  if (loading) return <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Querying bin × acquirer breakdown…</div>;
+  if (!result) return <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No data.</div>;
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+        Bin × Acquirer breakdown — on-demand only, never a standing monitor ({result.execution_ms}ms)
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr>
+            {['BIN', 'Acquirer', 'Total', 'Declines', 'Rate', 'Share of cell declines'].map(h => (
+              <th key={h} style={{ padding: '5px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {result.breakdown.map((b, i) => (
+            <tr key={i}>
+              <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{b.bin}</td>
+              <td style={{ padding: '5px 8px' }}>{b.acquirer}</td>
+              <td style={{ padding: '5px 8px' }}>{b.total_count}</td>
+              <td style={{ padding: '5px 8px' }}>{b.decline_count}</td>
+              <td style={{ padding: '5px 8px' }}>{(b.decline_rate * 100).toFixed(1)}%</td>
+              <td style={{ padding: '5px 8px', fontWeight: b.share_of_cell_declines > 50 ? 700 : 400, color: b.share_of_cell_declines > 50 ? '#ef4444' : 'var(--text)' }}>
+                {b.share_of_cell_declines.toFixed(1)}%
+              </td>
             </tr>
           ))}
         </tbody>
