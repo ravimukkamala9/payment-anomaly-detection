@@ -302,16 +302,127 @@ function StagePanel({ result, color, index, anomaly, active, onClick }: {
 
       {/* Charts + table */}
       <div style={{ padding: 18 }}>
+        <FormulaBlock index={index} color={color} />
         {index === 0 && result.chart_data && <Stage1Chart data={result.chart_data as never} />}
         {index === 1 && result.chart_data && <Stage2Chart data={result.chart_data as never} />}
         {index === 2 && result.wow_chart_data && result.wow_chart_data.length > 0 && (
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Week-over-Week Rate — Alert Cells (Same Mon 14:00, Weeks −4 to Current)</div>
-            <WoWLineChart data={result.wow_chart_data as never} height={300} />
-          </div>
+          <>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Week-over-Week Rate — Alert Cells (Same Mon 14:00, Weeks −4 to Current)</div>
+              <WoWLineChart data={result.wow_chart_data as never} height={300} />
+            </div>
+            <HistoricalTable data={result.wow_chart_data as never} color={color} />
+          </>
         )}
         {result.alerts.length > 0 && <AlertTable alerts={result.alerts} index={index} color={color} />}
       </div>
+    </div>
+  );
+}
+
+/** The one thing that actually differs between the three stages is what gets
+ * measured; the z-score around it is identical. Spelling that out per stage
+ * makes the "same math, different altitude" point concrete. */
+const STAGE_MATH = [
+  {
+    term: 'rate',
+    definition: 'declines ÷ transactions, summed across the roll-up group (decline_code × channel)',
+    floor: '0.0005',
+  },
+  {
+    term: 'share',
+    definition: "this cell's declines ÷ every decline in the window",
+    floor: '1e-6',
+    note: 'Share is zero-sum — all cells sum to 100%. So a cell can move without changing: when other cells spike, this one\'s share falls and z goes negative even though its own counts held steady.',
+  },
+  {
+    term: 'rate',
+    definition: "this cell's declines ÷ this cell's own transactions — no roll-up, no shared pool",
+    floor: '0.0008',
+  },
+];
+
+function FormulaBlock({ index, color }: { index: number; color: string }) {
+  const m = STAGE_MATH[index];
+  const span = `${m.term}(W-4…W-1)`;
+  return (
+    <div style={{ marginBottom: 16, padding: '12px 14px', background: 'rgba(0,0,0,0.18)', border: '1px solid var(--border)', borderRadius: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+        How the z-score is computed
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'monospace', fontSize: 12, color: 'var(--text)', flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 700, color }}>z</span>
+        <span>=</span>
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center' }}>
+          <span style={{ padding: '0 10px 4px' }}>{m.term}(now) − mean({span})</span>
+          <span style={{ padding: '4px 10px 0', borderTop: '1px solid var(--text-muted)' }}>
+            max( std({span}), {m.floor} )
+          </span>
+        </span>
+      </div>
+
+      <ul style={{ margin: '12px 0 0', paddingLeft: 16, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+        <li><strong style={{ color: 'var(--text)' }}>{m.term}</strong> = {m.definition}</li>
+        <li><strong style={{ color: 'var(--text)' }}>W-4…W-1</strong> = the same weekday and hour in each of the previous 4 weeks</li>
+        <li>The <strong style={{ color: 'var(--text)' }}>{m.floor}</strong> floor stops a near-constant history from dividing by ~0 and producing a meaningless z</li>
+        <li>A cell with no history at all skips the formula and is flagged directly as <strong style={{ color: 'var(--text)' }}>z = 99</strong></li>
+        <li>Alerts fire on <strong style={{ color: 'var(--text)' }}>|z| ≥ threshold</strong> — so an unusually <em>low</em> value alerts too, with negative z</li>
+      </ul>
+
+      {m.note && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {m.note}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface WoWEntry {
+  cell: string; short: string;
+  week_rates: Record<string, number | null>;
+  wow_mean: number; current_rate: number; z_wow: number;
+}
+
+/** The numbers behind Stage 3's line chart -- same four historical windows,
+ * read as values rather than shape. */
+function HistoricalTable({ data, color }: { data: WoWEntry[]; color: string }) {
+  const weeks = ['W-4', 'W-3', 'W-2', 'W-1'];
+  const pct = (v: number | null | undefined) => v === null || v === undefined ? '—' : (v * 100).toFixed(2) + '%';
+  return (
+    <div style={{ marginBottom: 16, overflowX: 'auto' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+        Historical Analysis — decline rate in each of the 4 prior windows
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr>
+            {['Cell', ...weeks, 'Mean', 'Current', 'Z'].map(h => (
+              <th key={h} style={{ padding: '7px 10px', textAlign: 'left', borderBottom: `2px solid ${color}44`, color, fontWeight: 700, whiteSpace: 'nowrap', textTransform: 'uppercase', fontSize: 10 }}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((d, i) => (
+            <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{d.cell}</td>
+              {weeks.map(w => (
+                <td key={w} style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                  {pct(d.week_rates[w])}
+                </td>
+              ))}
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{pct(d.wow_mean)}</td>
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontWeight: 700 }}>{pct(d.current_rate)}</td>
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontWeight: 700, color: Math.abs(d.z_wow) > 10 ? '#ef4444' : '#f59e0b' }}>
+                {d.z_wow.toFixed(1)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
