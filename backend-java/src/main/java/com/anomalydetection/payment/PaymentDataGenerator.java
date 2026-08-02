@@ -56,6 +56,10 @@ public class PaymentDataGenerator {
     public static final String[] BINS = {"411111", "400000", "520000", "550000", "370000", "601100", "353011", "622200"};
     public static final String[] ACQUIRERS = {"Acquirer-A", "Acquirer-B", "Acquirer-C", "Acquirer-D", "Acquirer-E"};
     private static final int SUB_SPLITS = 3;
+    /** Relative decline weight of an anomaly's dominant bin/acquirer pair --
+     * high enough that it clearly owns the cell against the other splits'
+     * random 0.1-1.1 weights. */
+    private static final double DOMINANT_WEIGHT = 8.0;
 
     public static final List<Cell> CELLS = new ArrayList<>();
     public static final List<AnomalyDef> ANOMALY_DEFS = new ArrayList<>();
@@ -216,69 +220,58 @@ public class PaymentDataGenerator {
     }
 
     /** Splits one (week, day, hour, cell) aggregate into SUB_SPLITS bin×acquirer
-     * sub-rows whose total_count/decline_count sum back exactly to the inputs.
-     * Stage 1/2/3 group only on the 7-dim CellKey (never bin/acquirer), so this
-     * split is invisible to them -- summing the sub-rows reproduces the exact
-     * same monitored numbers as before. For an anomaly window, one dominant
-     * bin/acquirer pair is given the large majority of the declines, so a
-     * drill-down into that cell finds a concentrated root cause instead of an
-     * even spread. */
+     * sub-rows. Stage 1/2/3 never group on bin/acquirer, so they only ever see
+     * the sums -- which are exactly the inputs, by construction here.
+     *
+     * Declines and non-declines are allocated separately, then added back
+     * together per sub-row. That buys both invariants for free:
+     * sum(declines) == declineCount, and declines[i] <= total[i] always. */
     private static void splitIntoBinAcquirerRows(List<PaymentRow> rows, RandomState rng, int week, int day, int hour,
                                                    Cell cell, int total, int declineCount, AnomalyDef anomaly) {
         String[] bins = new String[SUB_SPLITS];
         String[] acquirers = new String[SUB_SPLITS];
-        int[] totals = new int[SUB_SPLITS];
-        int[] declines = new int[SUB_SPLITS];
-
-        if (anomaly != null) {
-            bins[0] = anomaly.dominantBin;
-            acquirers[0] = anomaly.dominantAcquirer;
-            totals[0] = Math.max((int) Math.round(total * 0.5), Math.min(total, 1));
-            declines[0] = Math.min((int) Math.round(declineCount * 0.85), totals[0]);
-
-            int remainingTotal = total - totals[0];
-            int remainingDeclines = declineCount - declines[0];
-            int allocatedTotal = 0, allocatedDeclines = 0;
-            for (int i = 1; i < SUB_SPLITS; i++) {
-                bins[i] = distinctChoice(rng, BINS, anomaly.dominantBin);
-                acquirers[i] = distinctChoice(rng, ACQUIRERS, anomaly.dominantAcquirer);
-                boolean last = (i == SUB_SPLITS - 1);
-                totals[i] = last ? (remainingTotal - allocatedTotal) : (remainingTotal / (SUB_SPLITS - 1));
-                declines[i] = last ? (remainingDeclines - allocatedDeclines) : Math.min(remainingDeclines / (SUB_SPLITS - 1), totals[i]);
-                allocatedTotal += totals[i];
-                allocatedDeclines += declines[i];
-            }
-        } else {
-            double[] weights = new double[SUB_SPLITS];
-            double sumW = 0;
-            for (int i = 0; i < SUB_SPLITS; i++) { weights[i] = rng.nextDouble() + 0.1; sumW += weights[i]; }
-
-            int allocatedTotal = 0, allocatedDeclines = 0;
-            for (int i = 0; i < SUB_SPLITS; i++) {
-                bins[i] = rng.choice(BINS);
-                acquirers[i] = rng.choice(ACQUIRERS);
-                boolean last = (i == SUB_SPLITS - 1);
-                totals[i] = last ? (total - allocatedTotal) : (int) Math.round(total * weights[i] / sumW);
-                declines[i] = last ? (declineCount - allocatedDeclines) : Math.min((int) Math.round(declineCount * weights[i] / sumW), totals[i]);
-                allocatedTotal += totals[i];
-                allocatedDeclines += declines[i];
-            }
-        }
+        double[] declineWeights = new double[SUB_SPLITS];
+        double[] volumeWeights = new double[SUB_SPLITS];
 
         for (int i = 0; i < SUB_SPLITS; i++) {
-            int t = Math.max(totals[i], 0);
-            int dc = Math.max(Math.min(declines[i], t), 0);
-            double rate = t > 0 ? Math.round(((double) dc / t) * 1e6) / 1e6 : 0.0;
+            // In an anomaly window, one pair owns most of the declines -- so a
+            // drill-down finds a concentrated cause, not an even spread.
+            boolean dominant = (anomaly != null && i == 0);
+            bins[i] = dominant ? anomaly.dominantBin : rng.choice(BINS);
+            acquirers[i] = dominant ? anomaly.dominantAcquirer : rng.choice(ACQUIRERS);
+            declineWeights[i] = dominant ? DOMINANT_WEIGHT : rng.nextDouble() + 0.1;
+            volumeWeights[i] = rng.nextDouble() + 0.1;
+        }
+
+        int[] declines = allocate(declineCount, declineWeights);
+        int[] nonDeclines = allocate(total - declineCount, volumeWeights);
+
+        for (int i = 0; i < SUB_SPLITS; i++) {
+            int subTotal = declines[i] + nonDeclines[i];
+            double rate = subTotal > 0 ? Math.round(((double) declines[i] / subTotal) * 1e6) / 1e6 : 0.0;
             rows.add(new PaymentRow(week, day, hour, cell.network, cell.geography, cell.entryMode,
                     cell.purchaseType, cell.authType, cell.channel, cell.declineCode,
-                    t, dc, rate, bins[i], acquirers[i]));
+                    subTotal, declines[i], rate, bins[i], acquirers[i]));
         }
     }
 
-    private static String distinctChoice(RandomState rng, String[] pool, String exclude) {
-        String pick;
-        do { pick = rng.choice(pool); } while (pick.equals(exclude) && pool.length > 1);
-        return pick;
+    /** Splits `amount` across `weights` proportionally. Flooring never
+     * overshoots, so handing the leftover units out afterwards makes the
+     * parts sum back to `amount` exactly, with no bucket going negative. */
+    private static int[] allocate(int amount, double[] weights) {
+        double totalWeight = 0;
+        for (double w : weights) totalWeight += w;
+
+        int[] out = new int[weights.length];
+        int assigned = 0;
+        for (int i = 0; i < weights.length; i++) {
+            out[i] = (int) (amount * weights[i] / totalWeight);
+            assigned += out[i];
+        }
+        for (int i = 0; assigned < amount; i = (i + 1) % weights.length, assigned++) {
+            out[i]++;
+        }
+        return out;
     }
 
     private static double clip(double v, double lo, double hi) {

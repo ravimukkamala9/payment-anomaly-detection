@@ -2,45 +2,47 @@ package com.anomalydetection.payment;
 
 import java.util.*;
 
-/** Three independently-owned contribution-shift heads, each over a smaller
- * dimension subset than the full 7-dim Stage 2 CellKey. decline_code is
- * shared across every head -- it's the "why," and contribution share is
- * meaningless without it. This is the fix for cell-count growth as more
- * features get requested: instead of one monitor whose cardinality is the
- * cross-product of every dimension (250k+ cells at 12-15 real features),
- * each head stays small and dense, owned by the team that can act on it. */
+import static com.anomalydetection.payment.Dim.*;
+
+/** Stage 2 split into independently-owned heads, each watching a few
+ * dimensions instead of all of them.
+ *
+ * The reason is statistical as much as organizational: one monitor over
+ * every dimension has a cell count equal to their cross-product, so at
+ * 12-15 real features most cells see almost no traffic and their
+ * contribution share is mostly noise. Each head here keeps few enough
+ * dimensions that its cells stay dense enough to trust -- and small enough
+ * that one team can reason about them.
+ *
+ * decline_code is in every head: contribution share is a share *of
+ * declines*, so dropping the reason makes it meaningless.
+ *
+ * The cost: an anomaly that only shows up as an interaction between two
+ * heads' dimensions is invisible to both. DrillDown is the mitigation --
+ * it runs on demand against an already-flagged cell and can cross head
+ * boundaries freely, precisely because it isn't a standing monitor. */
 public class Stage2Heads {
+
+    private record Head(String key, String name, String owner, List<Dim> dims) {}
+
+    private static final List<Head> HEADS = List.of(
+            new Head("network_channel", "Network & Channel", "Network Ops",
+                    List.of(NETWORK, CHANNEL, GEOGRAPHY, DECLINE_CODE)),
+            new Head("payment_method", "Payment Method", "Payment Product",
+                    List.of(ENTRY_MODE, PURCHASE_TYPE, AUTH_TYPE, DECLINE_CODE)),
+            new Head("acquiring_risk", "Acquiring & Risk", "Risk / Fraud",
+                    List.of(BIN, ACQUIRER, DECLINE_CODE)));
 
     public static Map<String, Object> run(List<PaymentRow> df, int currentDay, int currentHour, double threshold) {
         Map<String, Object> heads = new LinkedHashMap<>();
-
-        heads.put("network_channel", head(df, currentDay, currentHour, threshold,
-                "Network & Channel", "Network Ops",
-                r -> List.of(r.network, r.channel, r.geography, r.declineCode),
-                List.of("network", "channel", "geography", "decline_code")));
-
-        heads.put("payment_method", head(df, currentDay, currentHour, threshold,
-                "Payment Method", "Payment Product",
-                r -> List.of(r.entryMode, r.purchaseType, r.authType, r.declineCode),
-                List.of("entry_mode", "purchase_type", "auth_type", "decline_code")));
-
-        heads.put("acquiring_risk", head(df, currentDay, currentHour, threshold,
-                "Acquiring & Risk", "Risk / Fraud",
-                r -> List.of(r.bin, r.acquirer, r.declineCode),
-                List.of("bin", "acquirer", "decline_code")));
-
+        for (Head h : HEADS) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("name", h.name());
+            result.put("owner", h.owner());
+            result.put("dims", h.dims().stream().map(Dim::label).toList());
+            result.putAll(ContributionHead.run(df, currentDay, currentHour, threshold, h.dims()));
+            heads.put(h.key(), result);
+        }
         return Map.of("heads", heads);
-    }
-
-    private static Map<String, Object> head(List<PaymentRow> df, int currentDay, int currentHour, double threshold,
-                                             String name, String owner,
-                                             java.util.function.Function<PaymentRow, List<String>> keyFn,
-                                             List<String> keyLabels) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("name", name);
-        result.put("owner", owner);
-        result.put("dims", keyLabels);
-        result.putAll(ContributionHead.run(df, currentDay, currentHour, threshold, keyFn, keyLabels));
-        return result;
     }
 }

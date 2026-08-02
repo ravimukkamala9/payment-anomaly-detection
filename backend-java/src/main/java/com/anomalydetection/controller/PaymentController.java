@@ -18,6 +18,20 @@ public class PaymentController {
 
     private volatile List<PaymentRow> paymentDf = null;
 
+    /** Every analysis endpoint needs generated data, so they all call this
+     * instead of repeating the same null check and error body. */
+    private List<PaymentRow> data() {
+        if (paymentDf == null) throw new NoDataException();
+        return paymentDf;
+    }
+
+    private static class NoDataException extends RuntimeException {}
+
+    @ExceptionHandler(NoDataException.class)
+    public ResponseEntity<?> handleNoData() {
+        return ResponseEntity.badRequest().body(Map.of("detail", "Generate data first"));
+    }
+
     @PostMapping("/generate")
     public Map<String, Object> generate() {
         paymentDf = PaymentDataGenerator.generate(42);
@@ -64,47 +78,28 @@ public class PaymentController {
 
     @PostMapping("/stage/{stageNum}")
     public ResponseEntity<?> stage(@PathVariable int stageNum, @RequestParam(defaultValue = "3.0") double threshold) {
-        if (paymentDf == null) {
-            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
-        }
+        List<PaymentRow> df = data();
         int cd = PaymentDataGenerator.CURRENT_DAY;
         int ch = PaymentDataGenerator.CURRENT_HOUR;
-        switch (stageNum) {
-            case 1: return ResponseEntity.ok(Stage1RollupWow.run(paymentDf, cd, ch, threshold));
-            case 2: return ResponseEntity.ok(Stage2Contribution.run(paymentDf, cd, ch, threshold));
-            case 3: return ResponseEntity.ok(Stage3WowGranular.run(paymentDf, cd, ch, threshold));
-            default: return ResponseEntity.status(400).body(Map.of("detail", "Stage must be 1, 2 or 3"));
-        }
+        return switch (stageNum) {
+            case 1 -> ResponseEntity.ok(Stage1RollupWow.run(df, cd, ch, threshold));
+            case 2 -> ResponseEntity.ok(Stage2Contribution.run(df, cd, ch, threshold));
+            case 3 -> ResponseEntity.ok(Stage3WowGranular.run(df, cd, ch, threshold));
+            default -> ResponseEntity.badRequest().body(Map.of("detail", "Stage must be 1, 2 or 3"));
+        };
     }
 
     /** Full raw dataset -- every hourly row, all 5 weeks, for client-side filtering in the Raw Data tab. */
     @GetMapping("/raw")
-    public ResponseEntity<?> raw() {
-        if (paymentDf == null) {
-            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
-        }
-        return ResponseEntity.ok(paymentDf);
+    public List<PaymentRow> raw() {
+        return data();
     }
 
     /** Filter the raw dataset down to a slice, then run Z-Score or Isolation Forest
      * on that slice's [total_count, decline_count, decline_rate] feature vector. */
     @PostMapping("/raw/detect")
     public ResponseEntity<?> rawDetect(@RequestBody RawDetectRequest req) {
-        if (paymentDf == null) {
-            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
-        }
-        List<PaymentRow> rows = paymentDf.stream().filter(r ->
-                (req.week == null || r.week == req.week) &&
-                (req.dayOfWeek == null || r.dayOfWeek == req.dayOfWeek) &&
-                (req.hour == null || r.hour == req.hour) &&
-                (req.network == null || r.network.equals(req.network)) &&
-                (req.geography == null || r.geography.equals(req.geography)) &&
-                (req.entryMode == null || r.entryMode.equals(req.entryMode)) &&
-                (req.purchaseType == null || r.purchaseType.equals(req.purchaseType)) &&
-                (req.authType == null || r.authType.equals(req.authType)) &&
-                (req.channel == null || r.channel.equals(req.channel)) &&
-                (req.declineCode == null || r.declineCode.equals(req.declineCode))
-        ).toList();
+        List<PaymentRow> rows = data().stream().filter(r -> matchesFilters(r, req)).toList();
 
         if (rows.size() < 2) {
             return ResponseEntity.status(400).body(Map.of("detail", "Need at least 2 matching rows to score — widen the filters"));
@@ -149,49 +144,57 @@ public class PaymentController {
         return ResponseEntity.ok(result);
     }
 
+    /** A null filter field means "any", so each clause only constrains when set. */
+    private static boolean matchesFilters(PaymentRow r, RawDetectRequest q) {
+        return matches(q.week, r.week)
+                && matches(q.dayOfWeek, r.dayOfWeek)
+                && matches(q.hour, r.hour)
+                && matches(q.network, r.network)
+                && matches(q.geography, r.geography)
+                && matches(q.entryMode, r.entryMode)
+                && matches(q.purchaseType, r.purchaseType)
+                && matches(q.authType, r.authType)
+                && matches(q.channel, r.channel)
+                && matches(q.declineCode, r.declineCode);
+    }
+
+    private static boolean matches(Integer filter, int value) {
+        return filter == null || filter == value;
+    }
+
+    private static boolean matches(String filter, String value) {
+        return filter == null || filter.equals(value);
+    }
+
     /** All 63 cells' contribution share vs strictly last week (W-1), not the 4-week average. */
     @GetMapping("/contribution-vs-last-week")
-    public ResponseEntity<?> contributionVsLastWeek() {
-        if (paymentDf == null) {
-            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
-        }
-        return ResponseEntity.ok(ContributionVsLastWeek.run(paymentDf, PaymentDataGenerator.CURRENT_DAY, PaymentDataGenerator.CURRENT_HOUR));
+    public Map<String, Object> contributionVsLastWeek() {
+        return ContributionVsLastWeek.run(data(), PaymentDataGenerator.CURRENT_DAY, PaymentDataGenerator.CURRENT_HOUR);
     }
 
     /** Aggregate decline patterns across all 5 weeks: weekly trend, hour-of-day, day-of-week, day×hour heatmap. */
     @GetMapping("/historical-analysis")
-    public ResponseEntity<?> historicalAnalysis() {
-        if (paymentDf == null) {
-            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
-        }
-        return ResponseEntity.ok(HistoricalAnalysis.run(paymentDf));
+    public Map<String, Object> historicalAnalysis() {
+        return HistoricalAnalysis.run(data());
     }
 
     /** Three independently-owned contribution-shift heads over smaller
      * dimension subsets than Stage 2's full 7-dim key -- see Stage2Heads.java. */
     @PostMapping("/stage2-heads")
-    public ResponseEntity<?> stage2Heads(@RequestParam(defaultValue = "3.0") double threshold) {
-        if (paymentDf == null) {
-            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
-        }
-        int cd = PaymentDataGenerator.CURRENT_DAY;
-        int ch = PaymentDataGenerator.CURRENT_HOUR;
-        return ResponseEntity.ok(Stage2Heads.run(paymentDf, cd, ch, threshold));
+    public Map<String, Object> stage2Heads(@RequestParam(defaultValue = "3.0") double threshold) {
+        return Stage2Heads.run(data(), PaymentDataGenerator.CURRENT_DAY, PaymentDataGenerator.CURRENT_HOUR, threshold);
     }
 
     /** On-demand only. Given the exact 7-dimension cell a stage has already
      * flagged, breaks it down by diagnostic dimensions (bin, acquirer) that
      * are never part of the continuously-monitored CellKey. */
     @GetMapping("/drill-down")
-    public ResponseEntity<?> drillDown(
+    public Map<String, Object> drillDown(
             @RequestParam int week, @RequestParam int dayOfWeek, @RequestParam int hour,
             @RequestParam String network, @RequestParam String geography, @RequestParam String entryMode,
             @RequestParam String purchaseType, @RequestParam String authType,
             @RequestParam String channel, @RequestParam String declineCode) {
-        if (paymentDf == null) {
-            return ResponseEntity.status(400).body(Map.of("detail", "Generate data first"));
-        }
-        return ResponseEntity.ok(DrillDown.run(paymentDf, week, dayOfWeek, hour,
-                network, geography, entryMode, purchaseType, authType, channel, declineCode));
+        return DrillDown.run(data(), week, dayOfWeek, hour,
+                network, geography, entryMode, purchaseType, authType, channel, declineCode);
     }
 }
