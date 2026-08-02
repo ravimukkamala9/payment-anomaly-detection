@@ -53,7 +53,7 @@ export default function Stage2HeadsTab() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          {heads.length} heads, {totalCellsAcrossHeads} cells combined — vs. one 7-dim monitor at 63 cells, or a full cross-product that would run into the hundreds of thousands as more features get added
+          {heads.length} heads, {totalCellsAcrossHeads} cells combined — vs. one 7-dim monitor at 63 cells
         </div>
         <button onClick={load} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: 'var(--surface2)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
           <RefreshCw size={12} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} /> Refresh
