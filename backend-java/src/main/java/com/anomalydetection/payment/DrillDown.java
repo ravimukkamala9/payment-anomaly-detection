@@ -1,50 +1,49 @@
 package com.anomalydetection.payment;
 
+import org.springframework.jdbc.core.JdbcTemplate;
+
 import java.util.*;
 
 /** On-demand only -- never runs continuously, unlike Stage 1/2/3. Given the
- * exact 7-dimension CellKey of a cell that a stage has already flagged,
- * groups that exact slice's raw rows by diagnostic dimensions (bin,
- * acquirer) that were never part of the monitored CellKey. This is how a
- * new business-requested field (a new diagnostic column here) avoids ever
- * becoming a new standing monitor: it only costs a query, run only against
- * an already-flagged cell, not every cell every window. */
+ * exact 7-dimension cell a stage has already flagged, groups that exact
+ * slice by diagnostic dimensions (bin, acquirer) that were never part of the
+ * monitored CellKey. One SQL query, scoped to a single already-flagged cell
+ * -- this is how a new business-requested field (a new SELECT column here)
+ * avoids ever becoming a new standing monitor: it only costs a query, run
+ * only against an already-flagged cell, not every cell every window. */
 public class DrillDown {
 
-    public static Map<String, Object> run(List<PaymentRow> df, int week, int dayOfWeek, int hour,
+    public static Map<String, Object> run(JdbcTemplate jdbc, int week, int dayOfWeek, int hour,
                                            String network, String geography, String entryMode,
                                            String purchaseType, String authType, String channel, String declineCode) {
         long startNs = System.nanoTime();
 
-        List<PaymentRow> slice = df.stream().filter(r ->
-                r.week == week && r.dayOfWeek == dayOfWeek && r.hour == hour &&
-                r.network.equals(network) && r.geography.equals(geography) && r.entryMode.equals(entryMode) &&
-                r.purchaseType.equals(purchaseType) && r.authType.equals(authType) &&
-                r.channel.equals(channel) && r.declineCode.equals(declineCode)
-        ).toList();
+        String sql = """
+                SELECT bin AS "bin", acquirer AS "acquirer",
+                       SUM(total_count) AS "total", SUM(decline_count) AS "declines"
+                FROM payment_declines
+                WHERE week = ? AND day_of_week = ? AND hour_of_day = ?
+                  AND network = ? AND geography = ? AND entry_mode = ?
+                  AND purchase_type = ? AND auth_type = ? AND channel = ? AND decline_code = ?
+                GROUP BY bin, acquirer
+                """;
+        List<Map<String, Object>> rows = jdbc.queryForList(sql,
+                week, dayOfWeek, hour, network, geography, entryMode, purchaseType, authType, channel, declineCode);
 
-        record Key(String bin, String acquirer) {}
-        Map<Key, long[]> agg = new LinkedHashMap<>(); // [total, declines]
-        long totalDeclines = 0;
-        for (PaymentRow r : slice) {
-            Key k = new Key(r.bin, r.acquirer);
-            long[] a = agg.computeIfAbsent(k, kk -> new long[2]);
-            a[0] += r.totalCount;
-            a[1] += r.declineCount;
-            totalDeclines += r.declineCount;
-        }
+        long totalDeclines = rows.stream().mapToLong(r -> ((Number) r.get("declines")).longValue()).sum();
         long totalDeclinesSafe = Math.max(totalDeclines, 1);
 
         List<Map<String, Object>> breakdown = new ArrayList<>();
-        for (Map.Entry<Key, long[]> e : agg.entrySet()) {
-            long[] a = e.getValue();
+        for (Map<String, Object> row : rows) {
+            long total = ((Number) row.get("total")).longValue();
+            long declines = ((Number) row.get("declines")).longValue();
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("bin", e.getKey().bin());
-            m.put("acquirer", e.getKey().acquirer());
-            m.put("total_count", a[0]);
-            m.put("decline_count", a[1]);
-            m.put("decline_rate", WowMath.round(a[1] / (double) Math.max(a[0], 1), 6));
-            m.put("share_of_cell_declines", WowMath.round(a[1] / (double) totalDeclinesSafe * 100, 2));
+            m.put("bin", row.get("bin"));
+            m.put("acquirer", row.get("acquirer"));
+            m.put("total_count", total);
+            m.put("decline_count", declines);
+            m.put("decline_rate", WowMath.round(declines / (double) Math.max(total, 1), 6));
+            m.put("share_of_cell_declines", WowMath.round(declines / (double) totalDeclinesSafe * 100, 2));
             breakdown.add(m);
         }
         breakdown.sort((a, b) -> Long.compare((Long) b.get("decline_count"), (Long) a.get("decline_count")));

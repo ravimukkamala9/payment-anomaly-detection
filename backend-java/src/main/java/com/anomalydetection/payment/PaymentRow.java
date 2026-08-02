@@ -36,8 +36,4 @@ public class PaymentRow {
         this.bin = bin;
         this.acquirer = acquirer;
     }
-
-    public String cellKey() {
-        return network + "|" + geography + "|" + entryMode + "|" + purchaseType + "|" + authType + "|" + channel + "|" + declineCode;
-    }
 }

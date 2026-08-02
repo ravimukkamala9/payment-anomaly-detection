@@ -30,10 +30,27 @@ Isolation Forest and Local Outlier Factor are implemented natively (see
 | Layer | Technology |
 |-------|-----------|
 | Language | Java 21 (LTS) |
-| Framework | Spring Boot 3.3 (spring-boot-starter-web) |
+| Framework | Spring Boot 3.3 (spring-boot-starter-web, spring-boot-starter-jdbc) |
+| Storage | H2, embedded and in-memory (`jdbc:h2:mem:paymentdb`) |
 | Build | Maven |
 | JSON | Jackson (bundled with Spring Boot web starter) |
 | CSV parsing | Apache Commons CSV |
+
+## Storage
+
+The generated payment dataset lives in an H2 table (`payment_declines`,
+schema in `src/main/resources/schema.sql`), not a Java `List` field. Every
+stage/head's grouping and summing is a SQL `GROUP BY` query
+(`PaymentDb.currentWindow` / `historicalWindow` / `singleWindow`) --
+that's the actual computation over up to 150k+ rows. The mean/std/z-score
+step that follows is a handful of numbers per already-aggregated cell, and
+stays in Java (`WowMath`) rather than being pushed into SQL too.
+
+`PaymentDataGenerator`'s RNG-driven synthetic generation (weighted sampling,
+anomaly injection) stays 100% Java -- that's procedural business logic, not
+something SQL should do. Only the *storage* of its output moved to the
+database; `POST /payment/generate` calls the generator, then bulk-inserts
+the result (`PaymentDb.regenerate`), replacing whatever was there before.
 
 ## Prerequisites
 
@@ -74,9 +91,15 @@ All endpoints mirror `backend/main.py`, mounted under `/api`:
 - `GET /api/datasets` — list of the 3 built-in synthetic datasets
 - `POST /api/analyze` — run zscore / isolation_forest / lof on a generated dataset
 - `POST /api/analyze/upload` — same, but on an uploaded CSV (multipart `file` + query params)
-- `POST /api/payment/generate` — generate the in-memory synthetic payment-decline dataset
+- `POST /api/payment/generate` — generate the payment-decline dataset and store it in H2
 - `GET /api/payment/download` — download the generated dataset as CSV
+- `GET /api/payment/raw` — every row, for the Raw Data tab's client-side filters
+- `POST /api/payment/raw/detect` — filter rows server-side, then score them with zscore/isolation_forest
 - `POST /api/payment/stage/{1,2,3}?threshold=3.0` — run WoW anomaly-detection stage 1/2/3
+- `POST /api/payment/stage2-heads?threshold=3.0` — Stage 2 + Stage 3's math, split across 3 smaller per-team dimension subsets
+- `GET /api/payment/drill-down?...` — on-demand bin×acquirer breakdown of one already-flagged cell
+- `GET /api/payment/contribution-vs-last-week` — all cells' share vs. strictly last week
+- `GET /api/payment/historical-analysis` — weekly/hourly/day-of-week aggregate patterns
 
 CORS is open to all origins/methods/headers, matching the Python `allow_origins=["*"]`
 (kept for convenience if you ever run the frontend's own dev server against this
@@ -85,12 +108,14 @@ backend directly instead of through the bundled static files).
 ## Project layout
 
 ```
+src/main/resources/
+  schema.sql                         payment_declines table + index, run on startup
 src/main/java/com/anomalydetection/
   AnomalyDetectionApplication.java   Spring Boot entry point
   config/CorsConfig.java             CORS (allow all)
   controller/
     AnalysisController.java          /health, /datasets, /analyze, /analyze/upload
-    PaymentController.java           /payment/generate, /download, /stage/{n}
+    PaymentController.java           /payment/*
   model/
     Dataset.java                     in-memory feature matrix + labels
     AnalysisRequest.java             /analyze request DTO
@@ -99,11 +124,19 @@ src/main/java/com/anomalydetection/
     IsolationForestDetector.java     from-scratch isolation forest
     LofDetector.java                 from-scratch local outlier factor
   payment/
-    PaymentRow.java, PaymentDataGenerator.java   port of payment_data_generator.py
-    CellKey.java
+    PaymentRow.java, PaymentDataGenerator.java   RNG-driven synthetic generator
+    PaymentDb.java                   all SQL: insert, and the two-query pattern
+                                      (current window / historical window) every
+                                      stage and head is built on
+    Dim.java                         a monitorable dimension = its column name
+    ContributionHead.java            Stage 2's share-vs-window math, any dimension subset
+    RateHead.java                    Stage 3's own-rate-vs-history math, any dimension subset
     Stage1RollupWow.java             port of stages/stage1_rollup_wow.py
-    Stage2Contribution.java          port of stages/stage2_contribution.py
-    Stage3WowGranular.java           port of stages/stage3_wow_granular.py
+    Stage2Contribution.java          ContributionHead over all 7 dimensions
+    Stage3WowGranular.java           RateHead over all 7 dimensions
+    Stage2Heads.java                 ContributionHead + RateHead over 3 smaller per-team subsets
+    DrillDown.java                   on-demand bin×acquirer breakdown, one SQL query
+    ContributionVsLastWeek.java, HistoricalAnalysis.java
   utils/
     DataProcessor.java               port of utils/data_processor.py generators + preprocess
     Metrics.java                     port of utils/metrics.py compute_metrics

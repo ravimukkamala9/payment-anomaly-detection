@@ -1,5 +1,7 @@
 package com.anomalydetection.payment;
 
+import org.springframework.jdbc.core.JdbcTemplate;
+
 import java.util.*;
 
 import static com.anomalydetection.payment.Dim.*;
@@ -39,15 +41,15 @@ public class Stage2Heads {
             new Head("acquiring_risk", "Acquiring & Risk", "Risk / Fraud",
                     List.of(BIN, ACQUIRER, DECLINE_CODE)));
 
-    public static Map<String, Object> run(List<PaymentRow> df, int currentDay, int currentHour, double threshold) {
+    public static Map<String, Object> run(JdbcTemplate jdbc, int currentDay, int currentHour, double threshold) {
         Map<String, Object> heads = new LinkedHashMap<>();
         for (Head h : HEADS) {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("name", h.name());
             result.put("owner", h.owner());
             result.put("dims", h.dims().stream().map(Dim::label).toList());
-            result.putAll(ContributionHead.run(df, currentDay, currentHour, threshold, h.dims()));
-            result.put("wow", RateHead.run(df, currentDay, currentHour, threshold, h.dims()));
+            result.putAll(ContributionHead.run(jdbc, currentDay, currentHour, threshold, h.dims()));
+            result.put("wow", RateHead.run(jdbc, currentDay, currentHour, threshold, h.dims()));
             heads.put(h.key(), result);
         }
         return Map.of("heads", heads);

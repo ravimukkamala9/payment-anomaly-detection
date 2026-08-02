@@ -1,13 +1,14 @@
 package com.anomalydetection.payment;
 
-import java.util.*;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import static com.anomalydetection.payment.RowAggregation.*;
+import java.util.*;
 
 /** WoW rate monitoring over any chosen set of dimensions -- the Stage 3
  * counterpart to ContributionHead. No roll-up, no shared pool: each cell's
  * own decline rate this window vs. its own rate in the same slot across the
- * prior 4 weeks.
+ * prior 4 weeks. SQL groups and sums (PaymentDb.currentWindow /
+ * historicalWindow); the z-score is the only Java-side step.
  *
  * Pairing this with ContributionHead per head is what makes a head a
  * complete monitor rather than half of one -- share catches masking
@@ -16,22 +17,28 @@ import static com.anomalydetection.payment.RowAggregation.*;
  * available at whatever dimension subset a team owns. */
 public class RateHead {
 
-    public static Map<String, Object> run(List<PaymentRow> df, int currentDay, int currentHour,
+    public static Map<String, Object> run(JdbcTemplate jdbc, int currentDay, int currentHour,
                                            double threshold, List<Dim> dims) {
         long startNs = System.nanoTime();
+        List<String> cols = dims.stream().map(Dim::label).toList();
 
-        Map<List<String>, Agg> current = groupByKey(currentWindow(df, currentDay, currentHour), r -> keyOf(r, dims));
+        List<Map<String, Object>> currentRows = PaymentDb.currentWindow(jdbc, cols, currentDay, currentHour);
+        Map<List<String>, PaymentDb.Agg> current = new LinkedHashMap<>();
+        for (Map<String, Object> row : currentRows) current.put(PaymentDb.keyOf(row, cols), PaymentDb.aggOf(row));
 
         // rate history per cell, kept indexed by week for the W-4..W-1 chart columns
+        List<Map<String, Object>> histRows = PaymentDb.historicalWindow(jdbc, cols, currentDay, currentHour);
         Map<List<String>, Map<Integer, Double>> rateByCellAndWeek = new LinkedHashMap<>();
-        groupByWeekThenKey(historicalWindow(df, currentDay, currentHour), r -> keyOf(r, dims))
-                .forEach((week, cells) -> cells.forEach((key, agg) -> rateByCellAndWeek
-                        .computeIfAbsent(key, k -> new LinkedHashMap<>())
-                        .put(week, agg.rate())));
+        for (Map<String, Object> row : histRows) {
+            PaymentDb.Agg agg = PaymentDb.aggOf(row);
+            rateByCellAndWeek
+                    .computeIfAbsent(PaymentDb.keyOf(row, cols), k -> new LinkedHashMap<>())
+                    .put(PaymentDb.weekOf(row), agg.rate());
+        }
 
         List<Map<String, Object>> cells = new ArrayList<>();
-        for (Map.Entry<List<String>, Agg> e : current.entrySet()) {
-            Agg agg = e.getValue();
+        for (Map.Entry<List<String>, PaymentDb.Agg> e : current.entrySet()) {
+            PaymentDb.Agg agg = e.getValue();
             Map<Integer, Double> weekRates = rateByCellAndWeek.getOrDefault(e.getKey(), Map.of());
             List<Double> history = new ArrayList<>(weekRates.values());
             boolean isNew = history.isEmpty();
@@ -40,8 +47,8 @@ public class RateHead {
 
             Map<String, Object> cell = new LinkedHashMap<>();
             for (int i = 0; i < dims.size(); i++) cell.put(dims.get(i).label(), e.getKey().get(i));
-            cell.put("total_count", (int) agg.total);
-            cell.put("decline_count", (int) agg.declines);
+            cell.put("total_count", (int) agg.total());
+            cell.put("decline_count", (int) agg.declines());
             cell.put("decline_rate", rate);
             cell.put("wow_mean", isNew ? 0.0 : WowMath.mean(history));
             cell.put("wow_std", isNew ? 0.0 : WowMath.std(history));
@@ -69,10 +76,6 @@ public class RateHead {
         result.put("wow_chart_data", alerts.stream().limit(6).map(c -> chartPoint(c, dims)).toList());
         result.put("alerts", alerts.stream().map(c -> alertRecord(c, dims)).toList());
         return result;
-    }
-
-    private static List<String> keyOf(PaymentRow r, List<Dim> dims) {
-        return dims.stream().map(d -> d.get().apply(r)).toList();
     }
 
     private static Map<String, Object> chartPoint(Map<String, Object> cell, List<Dim> dims) {

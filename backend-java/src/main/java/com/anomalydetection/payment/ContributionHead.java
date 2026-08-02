@@ -1,8 +1,8 @@
 package com.anomalydetection.payment;
 
-import java.util.*;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import static com.anomalydetection.payment.RowAggregation.*;
+import java.util.*;
 
 /** Contribution-shift monitoring over any chosen set of dimensions.
  *
@@ -11,42 +11,49 @@ import static com.anomalydetection.payment.RowAggregation.*;
  *   2. prior 4 weeks   -> each cell's share in each of those windows
  *   3. z-score of (1) against (2)
  *
- * Only the choice of dimensions varies, which is what lets one monitor over
- * all 7 dimensions (Stage2Contribution) and several smaller per-team monitors
- * (Stage2Heads) share this one implementation. */
+ * Steps 1 and 2 are SQL (PaymentDb.currentWindow / historicalWindow); step 3
+ * is the only part left in Java. Only the choice of dimensions varies, which
+ * is what lets one monitor over all 7 dimensions (Stage2Contribution) and
+ * several smaller per-team monitors (Stage2Heads) share this implementation. */
 public class ContributionHead {
 
-    public static Map<String, Object> run(List<PaymentRow> df, int currentDay, int currentHour,
+    public static Map<String, Object> run(JdbcTemplate jdbc, int currentDay, int currentHour,
                                            double threshold, List<Dim> dims) {
         long startNs = System.nanoTime();
+        List<String> cols = dims.stream().map(Dim::label).toList();
 
         // Step 1 -- current window, grouped into cells
-        Map<List<String>, Agg> current = groupByKey(currentWindow(df, currentDay, currentHour), r -> keyOf(r, dims));
-        long declinesNow = current.values().stream().mapToLong(a -> a.declines).sum();
+        List<Map<String, Object>> currentRows = PaymentDb.currentWindow(jdbc, cols, currentDay, currentHour);
+        Map<List<String>, PaymentDb.Agg> current = new LinkedHashMap<>();
+        for (Map<String, Object> row : currentRows) current.put(PaymentDb.keyOf(row, cols), PaymentDb.aggOf(row));
+        long declinesNow = current.values().stream().mapToLong(PaymentDb.Agg::declines).sum();
 
         // Step 2 -- same slot in each of the prior 4 weeks, as share-of-window history per cell
+        List<Map<String, Object>> histRows = PaymentDb.historicalWindow(jdbc, cols, currentDay, currentHour);
+        Map<Integer, List<Map<String, Object>>> byWeek = new TreeMap<>();
+        for (Map<String, Object> row : histRows) byWeek.computeIfAbsent(PaymentDb.weekOf(row), w -> new ArrayList<>()).add(row);
+
         Map<List<String>, List<Double>> history = new LinkedHashMap<>();
-        groupByWeekThenKey(historicalWindow(df, currentDay, currentHour), r -> keyOf(r, dims))
-                .forEach((week, cells) -> {
-                    long declinesThatWeek = Math.max(cells.values().stream().mapToLong(a -> a.declines).sum(), 1);
-                    cells.forEach((key, agg) -> history
-                            .computeIfAbsent(key, k -> new ArrayList<>())
-                            .add(agg.declines / (double) declinesThatWeek));
-                });
+        byWeek.forEach((week, rows) -> {
+            long declinesThatWeek = Math.max(rows.stream().mapToLong(r -> PaymentDb.aggOf(r).declines()).sum(), 1);
+            rows.forEach(r -> history
+                    .computeIfAbsent(PaymentDb.keyOf(r, cols), k -> new ArrayList<>())
+                    .add(PaymentDb.aggOf(r).declines() / (double) declinesThatWeek));
+        });
 
         // Step 3 -- score every currently-active cell against its own history
         List<Map<String, Object>> cells = new ArrayList<>();
-        for (Map.Entry<List<String>, Agg> e : current.entrySet()) {
-            Agg agg = e.getValue();
+        for (Map.Entry<List<String>, PaymentDb.Agg> e : current.entrySet()) {
+            PaymentDb.Agg agg = e.getValue();
             List<Double> past = history.getOrDefault(e.getKey(), List.of());
-            double share = agg.declines / (double) Math.max(declinesNow, 1);
+            double share = agg.declines() / (double) Math.max(declinesNow, 1);
             double z = WowMath.zScore(share, past, 1e-6);
             boolean isNew = past.isEmpty();
 
             Map<String, Object> cell = new LinkedHashMap<>();
             for (int i = 0; i < dims.size(); i++) cell.put(dims.get(i).label(), e.getKey().get(i));
-            cell.put("decline_count", (int) agg.declines);
-            cell.put("total_count", (int) agg.total);
+            cell.put("decline_count", (int) agg.declines());
+            cell.put("total_count", (int) agg.total());
             cell.put("contribution_pct", share);
             cell.put("hist_mean", isNew ? 0.0 : WowMath.mean(past));
             cell.put("hist_std", isNew ? 0.0 : WowMath.std(past));
@@ -70,10 +77,6 @@ public class ContributionHead {
         result.put("chart_data", topCells.stream().map(c -> chartPoint(c, dims)).toList());
         result.put("alerts", alerts.stream().map(c -> alertRecord(c, dims)).toList());
         return result;
-    }
-
-    private static List<String> keyOf(PaymentRow r, List<Dim> dims) {
-        return dims.stream().map(d -> d.get().apply(r)).toList();
     }
 
     /** Descending by the given numeric field. */
