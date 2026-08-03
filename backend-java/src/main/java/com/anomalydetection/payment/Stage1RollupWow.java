@@ -1,36 +1,39 @@
 package com.anomalydetection.payment;
 
+import org.springframework.jdbc.core.JdbcTemplate;
+
 import java.util.*;
 
-import static com.anomalydetection.payment.RowAggregation.*;
+import static com.anomalydetection.payment.Dim.*;
 
 /** Port of stages/stage1_rollup_wow.py.
- * Two queries -- current window and prior weeks, both grouped by
+ * Two SQL queries -- current window and prior weeks, both grouped by
  * (decline_code, channel) -- then a small downstream z-score per monitor. */
 public class Stage1RollupWow {
 
-    record RollupKey(String declineCode, String channel) {
-        static RollupKey of(PaymentRow r) { return new RollupKey(r.declineCode, r.channel); }
-    }
+    private static final List<Dim> DIMS = List.of(DECLINE_CODE, CHANNEL);
 
-    public static Map<String, Object> run(List<PaymentRow> df, int currentDay, int currentHour, double threshold) {
+    public static Map<String, Object> run(JdbcTemplate jdbc, int currentDay, int currentHour, double threshold) {
         long startNs = System.nanoTime();
+        List<String> cols = DIMS.stream().map(Dim::label).toList();
 
         // Query 1 -- current window, rolled up to (decline_code, channel)
-        Map<RollupKey, Agg> current = groupByKey(currentWindow(df, currentDay, currentHour), RollupKey::of);
+        List<Map<String, Object>> currentRows = PaymentDb.currentWindow(jdbc, cols, currentDay, currentHour);
+        Map<List<String>, PaymentDb.Agg> current = new LinkedHashMap<>();
+        for (Map<String, Object> row : currentRows) current.put(PaymentDb.keyOf(row, cols), PaymentDb.aggOf(row));
 
         // Query 2 -- prior 4 weeks, same slot, per (week, decline_code, channel)
-        Map<Integer, Map<RollupKey, Agg>> historical = groupByWeekThenKey(historicalWindow(df, currentDay, currentHour), RollupKey::of);
-
-        // Downstream: transpose to per-monitor list of historical rates
-        Map<RollupKey, List<Double>> historicalRates = new LinkedHashMap<>();
-        historical.forEach((week, byKey) -> byKey.forEach((key, agg) ->
-                historicalRates.computeIfAbsent(key, k -> new ArrayList<>()).add(agg.rate())));
+        List<Map<String, Object>> histRows = PaymentDb.historicalWindow(jdbc, cols, currentDay, currentHour);
+        Map<List<String>, List<Double>> historicalRates = new LinkedHashMap<>();
+        for (Map<String, Object> row : histRows) {
+            historicalRates.computeIfAbsent(PaymentDb.keyOf(row, cols), k -> new ArrayList<>())
+                    .add(PaymentDb.aggOf(row).rate());
+        }
 
         List<Map<String, Object>> merged = new ArrayList<>();
-        for (Map.Entry<RollupKey, Agg> e : current.entrySet()) {
-            RollupKey key = e.getKey();
-            Agg agg = e.getValue();
+        for (Map.Entry<List<String>, PaymentDb.Agg> e : current.entrySet()) {
+            List<String> key = e.getKey();
+            PaymentDb.Agg agg = e.getValue();
             double rate = agg.rate();
             List<Double> history = historicalRates.getOrDefault(key, List.of());
             boolean isNew = history.isEmpty();
@@ -38,10 +41,10 @@ public class Stage1RollupWow {
             boolean alerted = Math.abs(z) >= threshold || isNew;
 
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("decline_code", key.declineCode());
-            m.put("channel", key.channel());
-            m.put("total", agg.total);
-            m.put("declines", agg.declines);
+            m.put("decline_code", key.get(0));
+            m.put("channel", key.get(1));
+            m.put("total", agg.total());
+            m.put("declines", agg.declines());
             m.put("rate", rate);
             m.put("wow_mean", isNew ? 0 : WowMath.mean(history));
             m.put("wow_std", isNew ? 0 : WowMath.std(history));

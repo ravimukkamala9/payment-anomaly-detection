@@ -33,16 +33,33 @@ public class PaymentDataGenerator {
         public int stage;
         public String description;
         public String reason;
+        /** Diagnostic-only: the bin/acquirer a drill-down into this anomaly's
+         * cell should find concentrated -- simulates "one processor/BIN range
+         * is the actual root cause" the way a real drill-down would surface. */
+        public String dominantBin;
+        public String dominantAcquirer;
 
-        AnomalyDef(String[] key, double multiplier, int stage, String description, String reason) {
+        AnomalyDef(String[] key, double multiplier, int stage, String description, String reason,
+                   String dominantBin, String dominantAcquirer) {
             this.key = key; this.multiplier = multiplier; this.stage = stage;
             this.description = description; this.reason = reason;
+            this.dominantBin = dominantBin; this.dominantAcquirer = dominantAcquirer;
         }
 
         String keyStr() {
             return String.join("|", key);
         }
     }
+
+    /** Diagnostic-only dimensions -- never part of CellKey, only ever grouped
+     * on by the drill-down endpoint once a core-key cell has already flagged. */
+    public static final String[] BINS = {"411111", "400000", "520000", "550000", "370000", "601100", "353011", "622200"};
+    public static final String[] ACQUIRERS = {"Acquirer-A", "Acquirer-B", "Acquirer-C", "Acquirer-D", "Acquirer-E"};
+    private static final int SUB_SPLITS = 3;
+    /** Relative decline weight of an anomaly's dominant bin/acquirer pair --
+     * high enough that it clearly owns the cell against the other splits'
+     * random 0.1-1.1 weights. */
+    private static final double DOMINANT_WEIGHT = 8.0;
 
     public static final List<Cell> CELLS = new ArrayList<>();
     public static final List<AnomalyDef> ANOMALY_DEFS = new ArrayList<>();
@@ -124,17 +141,20 @@ public class PaymentDataGenerator {
                 new String[]{"VISA","INTERNATIONAL","TAP","NORMAL","AUTH","CARD_PRESENT","NSF"},
                 14.0, 1, "VISA Intl TAP NSF — rate spike ×14",
                 "Network routing misconfiguration sending international TAP auth to wrong endpoint, " +
-                "generating NSF false declines at 14× normal rate."));
+                "generating NSF false declines at 14× normal rate.",
+                "601100", "Acquirer-D"));
         ANOMALY_DEFS.add(new AnomalyDef(
                 new String[]{"MC","DOMESTIC","PIN","CASHBACK","AUTH","CARD_PRESENT","WRONG_PIN"},
                 18.0, 2, "MC DOM PIN Cashback WRONG_PIN — contribution shift ×18",
                 "ATM firmware update introduced PIN verification bug specific to cashback transactions. " +
-                "Now 9% of all declines vs normal 0.4% — invisible at roll-up level."));
+                "Now 9% of all declines vs normal 0.4% — invisible at roll-up level.",
+                "520000", "Acquirer-B"));
         ANOMALY_DEFS.add(new AnomalyDef(
                 new String[]{"AMEX","INTERNATIONAL","WALLET","NORMAL","AUTH","ECOM","CVV_MISMATCH"},
                 22.0, 3, "AMEX Intl Wallet CVV_MISMATCH — WoW break ×22",
                 "Token provisioning defect for AMEX international ecom wallet. Low-volume cell " +
-                "invisible to roll-up. Same Monday 14:00 slot last 4 weeks: 1-2 declines. Today: 33."));
+                "invisible to roll-up. Same Monday 14:00 slot last 4 weeks: 1-2 declines. Today: 33.",
+                "370000", "Acquirer-E"));
 
         double[] hourMultVals = {0.15,0.10,0.08,0.07,0.10,0.20,0.40,0.70,0.90,1.10,1.30,1.40,1.20,1.30,1.40,1.35,1.25,1.10,0.90,0.80,0.70,0.60,0.45,0.30};
         for (int h = 0; h < 24; h++) HOUR_MULT.put(h, hourMultVals[h]);
@@ -151,6 +171,10 @@ public class PaymentDataGenerator {
 
     public static List<PaymentRow> generate(long seed) {
         RandomState rng = new RandomState(seed);
+        // Separate stream so the bin/acquirer split never perturbs the RNG
+        // sequence driving total_count/decline_count -- Stage 1/2/3 outputs
+        // must stay byte-for-byte identical to before this split existed.
+        RandomState splitRng = new RandomState(seed + 1_000_000);
         Map<String, AnomalyDef> anomalyMap = new HashMap<>();
         for (AnomalyDef a : ANOMALY_DEFS) anomalyMap.put(a.keyStr(), a);
 
@@ -178,22 +202,76 @@ public class PaymentDataGenerator {
                             double rate = clip(cell.baseRate * (1 + rng.normal(0, 0.12)), 0.001, 0.95);
 
                             boolean isAnomalyWindow = (week == 0 && day == CURRENT_DAY && hour == CURRENT_HOUR);
-                            if (isAnomalyWindow && anomalyMap.containsKey(cell.key())) {
-                                rate = clip(rate * anomalyMap.get(cell.key()).multiplier, 0, 0.98);
+                            AnomalyDef anomaly = isAnomalyWindow ? anomalyMap.get(cell.key()) : null;
+                            if (anomaly != null) {
+                                rate = clip(rate * anomaly.multiplier, 0, 0.98);
                             }
 
                             int declineCount = (int) clip(total * rate, 0, total);
                             double declineRate = total > 0 ? Math.round(((double) declineCount / total) * 1e6) / 1e6 : 0.0;
 
-                            rows.add(new PaymentRow(week, day, hour, cell.network, cell.geography, cell.entryMode,
-                                    cell.purchaseType, cell.authType, cell.channel, cell.declineCode,
-                                    total, declineCount, declineRate));
+                            splitIntoBinAcquirerRows(rows, splitRng, week, day, hour, cell, total, declineCount, anomaly);
                         }
                     }
                 }
             }
         }
         return rows;
+    }
+
+    /** Splits one (week, day, hour, cell) aggregate into SUB_SPLITS bin×acquirer
+     * sub-rows. Stage 1/2/3 never group on bin/acquirer, so they only ever see
+     * the sums -- which are exactly the inputs, by construction here.
+     *
+     * Declines and non-declines are allocated separately, then added back
+     * together per sub-row. That buys both invariants for free:
+     * sum(declines) == declineCount, and declines[i] <= total[i] always. */
+    private static void splitIntoBinAcquirerRows(List<PaymentRow> rows, RandomState rng, int week, int day, int hour,
+                                                   Cell cell, int total, int declineCount, AnomalyDef anomaly) {
+        String[] bins = new String[SUB_SPLITS];
+        String[] acquirers = new String[SUB_SPLITS];
+        double[] declineWeights = new double[SUB_SPLITS];
+        double[] volumeWeights = new double[SUB_SPLITS];
+
+        for (int i = 0; i < SUB_SPLITS; i++) {
+            // In an anomaly window, one pair owns most of the declines -- so a
+            // drill-down finds a concentrated cause, not an even spread.
+            boolean dominant = (anomaly != null && i == 0);
+            bins[i] = dominant ? anomaly.dominantBin : rng.choice(BINS);
+            acquirers[i] = dominant ? anomaly.dominantAcquirer : rng.choice(ACQUIRERS);
+            declineWeights[i] = dominant ? DOMINANT_WEIGHT : rng.nextDouble() + 0.1;
+            volumeWeights[i] = rng.nextDouble() + 0.1;
+        }
+
+        int[] declines = allocate(declineCount, declineWeights);
+        int[] nonDeclines = allocate(total - declineCount, volumeWeights);
+
+        for (int i = 0; i < SUB_SPLITS; i++) {
+            int subTotal = declines[i] + nonDeclines[i];
+            double rate = subTotal > 0 ? Math.round(((double) declines[i] / subTotal) * 1e6) / 1e6 : 0.0;
+            rows.add(new PaymentRow(week, day, hour, cell.network, cell.geography, cell.entryMode,
+                    cell.purchaseType, cell.authType, cell.channel, cell.declineCode,
+                    subTotal, declines[i], rate, bins[i], acquirers[i]));
+        }
+    }
+
+    /** Splits `amount` across `weights` proportionally. Flooring never
+     * overshoots, so handing the leftover units out afterwards makes the
+     * parts sum back to `amount` exactly, with no bucket going negative. */
+    private static int[] allocate(int amount, double[] weights) {
+        double totalWeight = 0;
+        for (double w : weights) totalWeight += w;
+
+        int[] out = new int[weights.length];
+        int assigned = 0;
+        for (int i = 0; i < weights.length; i++) {
+            out[i] = (int) (amount * weights[i] / totalWeight);
+            assigned += out[i];
+        }
+        for (int i = 0; assigned < amount; i = (i + 1) % weights.length, assigned++) {
+            out[i]++;
+        }
+        return out;
     }
 
     private static double clip(double v, double lo, double hi) {

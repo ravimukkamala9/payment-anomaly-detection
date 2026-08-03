@@ -5,13 +5,15 @@ import WoWLineChart from '../components/charts/WoWLineChart';
 import RawDataTab from './payment/RawDataTab';
 import ContributionShiftTab from './payment/ContributionShiftTab';
 import HistoricalAnalysisTab from './payment/HistoricalAnalysisTab';
+import MonitoringHeadsTab from './payment/MonitoringHeadsTab';
 
-type MainTab = 'pipeline' | 'raw' | 'contribution' | 'historical';
+type MainTab = 'pipeline' | 'raw' | 'contribution' | 'historical' | 'heads';
 const MAIN_TABS: { id: MainTab; label: string }[] = [
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'raw', label: 'Raw Data' },
   { id: 'contribution', label: 'Contribution Shift' },
   { id: 'historical', label: 'Historical Analysis' },
+  { id: 'heads', label: 'Monitoring Heads' },
 ];
 
 const API = '/api';
@@ -245,6 +247,7 @@ export default function PaymentPipelinePage() {
           {mainTab === 'raw' && <RawDataTab />}
           {mainTab === 'contribution' && <ContributionShiftTab />}
           {mainTab === 'historical' && <HistoricalAnalysisTab />}
+          {mainTab === 'heads' && <MonitoringHeadsTab />}
         </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -299,16 +302,127 @@ function StagePanel({ result, color, index, anomaly, active, onClick }: {
 
       {/* Charts + table */}
       <div style={{ padding: 18 }}>
+        <FormulaBlock index={index} color={color} />
         {index === 0 && result.chart_data && <Stage1Chart data={result.chart_data as never} />}
         {index === 1 && result.chart_data && <Stage2Chart data={result.chart_data as never} />}
         {index === 2 && result.wow_chart_data && result.wow_chart_data.length > 0 && (
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Week-over-Week Rate — Alert Cells (Same Mon 14:00, Weeks −4 to Current)</div>
-            <WoWLineChart data={result.wow_chart_data as never} height={300} />
-          </div>
+          <>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Week-over-Week Rate — Alert Cells (Same Mon 14:00, Weeks −4 to Current)</div>
+              <WoWLineChart data={result.wow_chart_data as never} height={300} />
+            </div>
+            <HistoricalTable data={result.wow_chart_data as never} color={color} />
+          </>
         )}
         {result.alerts.length > 0 && <AlertTable alerts={result.alerts} index={index} color={color} />}
       </div>
+    </div>
+  );
+}
+
+/** The one thing that actually differs between the three stages is what gets
+ * measured; the z-score around it is identical. Spelling that out per stage
+ * makes the "same math, different altitude" point concrete. */
+const STAGE_MATH = [
+  {
+    term: 'rate',
+    definition: 'declines ÷ transactions, summed across the roll-up group (decline_code × channel)',
+    floor: '0.0005',
+  },
+  {
+    term: 'share',
+    definition: "this cell's declines ÷ every decline in the window",
+    floor: '1e-6',
+    note: 'Share is zero-sum — all cells sum to 100%. So a cell can move without changing: when other cells spike, this one\'s share falls and z goes negative even though its own counts held steady.',
+  },
+  {
+    term: 'rate',
+    definition: "this cell's declines ÷ this cell's own transactions — no roll-up, no shared pool",
+    floor: '0.0008',
+  },
+];
+
+function FormulaBlock({ index, color }: { index: number; color: string }) {
+  const m = STAGE_MATH[index];
+  const span = `${m.term}(W-4…W-1)`;
+  return (
+    <div style={{ marginBottom: 16, padding: '12px 14px', background: 'rgba(0,0,0,0.18)', border: '1px solid var(--border)', borderRadius: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+        How the z-score is computed
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'monospace', fontSize: 12, color: 'var(--text)', flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 700, color }}>z</span>
+        <span>=</span>
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center' }}>
+          <span style={{ padding: '0 10px 4px' }}>{m.term}(now) − mean({span})</span>
+          <span style={{ padding: '4px 10px 0', borderTop: '1px solid var(--text-muted)' }}>
+            max( std({span}), {m.floor} )
+          </span>
+        </span>
+      </div>
+
+      <ul style={{ margin: '12px 0 0', paddingLeft: 16, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+        <li><strong style={{ color: 'var(--text)' }}>{m.term}</strong> = {m.definition}</li>
+        <li><strong style={{ color: 'var(--text)' }}>W-4…W-1</strong> = the same weekday and hour in each of the previous 4 weeks</li>
+        <li>The <strong style={{ color: 'var(--text)' }}>{m.floor}</strong> floor stops a near-constant history from dividing by ~0 and producing a meaningless z</li>
+        <li>A cell with no history at all skips the formula and is flagged directly as <strong style={{ color: 'var(--text)' }}>z = 99</strong></li>
+        <li>Alerts fire on <strong style={{ color: 'var(--text)' }}>|z| ≥ threshold</strong> — so an unusually <em>low</em> value alerts too, with negative z</li>
+      </ul>
+
+      {m.note && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {m.note}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface WoWEntry {
+  cell: string; short: string;
+  week_rates: Record<string, number | null>;
+  wow_mean: number; current_rate: number; z_wow: number;
+}
+
+/** The numbers behind Stage 3's line chart -- same four historical windows,
+ * read as values rather than shape. */
+function HistoricalTable({ data, color }: { data: WoWEntry[]; color: string }) {
+  const weeks = ['W-4', 'W-3', 'W-2', 'W-1'];
+  const pct = (v: number | null | undefined) => v === null || v === undefined ? '—' : (v * 100).toFixed(2) + '%';
+  return (
+    <div style={{ marginBottom: 16, overflowX: 'auto' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+        Historical Analysis — decline rate in each of the 4 prior windows
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr>
+            {['Cell', ...weeks, 'Mean', 'Current', 'Z'].map(h => (
+              <th key={h} style={{ padding: '7px 10px', textAlign: 'left', borderBottom: `2px solid ${color}44`, color, fontWeight: 700, whiteSpace: 'nowrap', textTransform: 'uppercase', fontSize: 10 }}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((d, i) => (
+            <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{d.cell}</td>
+              {weeks.map(w => (
+                <td key={w} style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                  {pct(d.week_rates[w])}
+                </td>
+              ))}
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{pct(d.wow_mean)}</td>
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontWeight: 700 }}>{pct(d.current_rate)}</td>
+              <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontWeight: 700, color: Math.abs(d.z_wow) > 10 ? '#ef4444' : '#f59e0b' }}>
+                {d.z_wow.toFixed(1)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -374,12 +488,25 @@ function Stage2Chart({ data }: { data: { cell_short: string; contribution_pct: n
   );
 }
 
+interface DrillDownBreakdown {
+  bin: string; acquirer: string; total_count: number; decline_count: number;
+  decline_rate: number; share_of_cell_declines: number;
+}
+interface DrillDownResult {
+  n_combinations: number; total_declines: number; execution_ms: number;
+  breakdown: DrillDownBreakdown[];
+}
+
 function AlertTable({ alerts, index, color }: { alerts: Record<string, unknown>[]; index: number; color: string }) {
   const cols = index === 0
     ? ['decline_code', 'channel', 'total', 'declines', 'rate', 'wow_mean', 'z_score']
     : index === 1
     ? ['network', 'geography', 'decline_code', 'decline_count', 'contribution_pct', 'hist_mean', 'z_contribution']
     : ['network', 'geography', 'entry_mode', 'decline_code', 'decline_rate', 'wow_mean', 'z_wow', 'n_weeks'];
+
+  const [openRow, setOpenRow] = useState<number | null>(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillResult, setDrillResult] = useState<DrillDownResult | null>(null);
 
   const fmtVal = (k: string, v: unknown) => {
     if (v === null || v === undefined) return '—';
@@ -388,6 +515,25 @@ function AlertTable({ alerts, index, color }: { alerts: Record<string, unknown>[
     if (numericPct.includes(k) && typeof v === 'number') return (v * (k.includes('contribution') ? 100 : 100)).toFixed(2) + '%';
     if (typeof v === 'number') return Math.abs(v) > 10 ? v.toFixed(1) : v.toFixed(3);
     return String(v);
+  };
+
+  const drillDown = async (i: number, row: Record<string, unknown>) => {
+    if (openRow === i) { setOpenRow(null); return; }
+    setOpenRow(i);
+    setDrillLoading(true);
+    setDrillResult(null);
+    try {
+      const params = new URLSearchParams({
+        week: '0', dayOfWeek: '0', hour: '14',
+        network: String(row.network), geography: String(row.geography), entryMode: String(row.entry_mode),
+        purchaseType: String(row.purchase_type), authType: String(row.auth_type),
+        channel: String(row.channel), declineCode: String(row.decline_code),
+      });
+      const res = await fetch(`${API}/payment/drill-down?${params}`);
+      if (res.ok) setDrillResult(await res.json());
+    } finally {
+      setDrillLoading(false);
+    }
   };
 
   return (
@@ -403,25 +549,81 @@ function AlertTable({ alerts, index, color }: { alerts: Record<string, unknown>[
                 {c.replace(/_/g, ' ')}
               </th>
             ))}
+            {index === 1 && <th style={{ padding: '7px 10px', borderBottom: `2px solid ${color}44` }} />}
           </tr>
         </thead>
         <tbody>
           {alerts.map((row, i) => (
-            <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
-              {cols.map(c => {
-                const v = row[c];
-                const isZ = c.startsWith('z_');
-                const zVal = typeof v === 'number' ? Math.abs(v) : 0;
-                return (
-                  <td key={c} style={{
-                    padding: '7px 10px', borderBottom: '1px solid var(--border)',
-                    color: isZ && zVal > 10 ? '#ef4444' : isZ && zVal > 3 ? '#f59e0b' : 'var(--text)',
-                    fontWeight: isZ ? 700 : 400, whiteSpace: 'nowrap', fontFamily: isZ ? 'monospace' : 'inherit',
-                  }}>
-                    {fmtVal(c, v)}
+            <React.Fragment key={i}>
+              <tr style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
+                {cols.map(c => {
+                  const v = row[c];
+                  const isZ = c.startsWith('z_');
+                  const zVal = typeof v === 'number' ? Math.abs(v) : 0;
+                  return (
+                    <td key={c} style={{
+                      padding: '7px 10px', borderBottom: '1px solid var(--border)',
+                      color: isZ && zVal > 10 ? '#ef4444' : isZ && zVal > 3 ? '#f59e0b' : 'var(--text)',
+                      fontWeight: isZ ? 700 : 400, whiteSpace: 'nowrap', fontFamily: isZ ? 'monospace' : 'inherit',
+                    }}>
+                      {fmtVal(c, v)}
+                    </td>
+                  );
+                })}
+                {index === 1 && (
+                  <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                    <button onClick={() => drillDown(i, row)} style={{
+                      fontSize: 10, fontWeight: 600, padding: '4px 8px', borderRadius: 5,
+                      background: openRow === i ? color + '22' : 'var(--surface2)',
+                      color: openRow === i ? color : 'var(--text-muted)', border: `1px solid ${openRow === i ? color : 'var(--border)'}`,
+                    }}>
+                      {openRow === i ? 'Hide' : 'Drill down'}
+                    </button>
                   </td>
-                );
-              })}
+                )}
+              </tr>
+              {index === 1 && openRow === i && (
+                <tr>
+                  <td colSpan={cols.length + 1} style={{ padding: '10px 10px 14px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.15)' }}>
+                    <DrillDownPanel loading={drillLoading} result={drillResult} />
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DrillDownPanel({ loading, result }: { loading: boolean; result: DrillDownResult | null }) {
+  if (loading) return <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Querying bin × acquirer breakdown…</div>;
+  if (!result) return <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No data.</div>;
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+        Bin × Acquirer breakdown — on-demand only, never a standing monitor ({result.execution_ms}ms)
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr>
+            {['BIN', 'Acquirer', 'Total', 'Declines', 'Rate', 'Share of cell declines'].map(h => (
+              <th key={h} style={{ padding: '5px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {result.breakdown.map((b, i) => (
+            <tr key={i}>
+              <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{b.bin}</td>
+              <td style={{ padding: '5px 8px' }}>{b.acquirer}</td>
+              <td style={{ padding: '5px 8px' }}>{b.total_count}</td>
+              <td style={{ padding: '5px 8px' }}>{b.decline_count}</td>
+              <td style={{ padding: '5px 8px' }}>{(b.decline_rate * 100).toFixed(1)}%</td>
+              <td style={{ padding: '5px 8px', fontWeight: b.share_of_cell_declines > 50 ? 700 : 400, color: b.share_of_cell_declines > 50 ? '#ef4444' : 'var(--text)' }}>
+                {b.share_of_cell_declines.toFixed(1)}%
+              </td>
             </tr>
           ))}
         </tbody>

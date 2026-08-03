@@ -1,44 +1,39 @@
 package com.anomalydetection.payment;
 
+import org.springframework.jdbc.core.JdbcTemplate;
+
 import java.util.*;
 
 /** Aggregate views across all 5 weeks -- the seasonal shape every WoW
  * comparison in stages 1-3 is implicitly checking the current window
- * against. Three cuts: per-week trend, hour-of-day pattern, day-of-week
- * pattern. */
+ * against. Four plain GROUP BY queries, no historical comparison and so no
+ * z-score step -- this is the one class in the payment package that's just
+ * SQL, start to finish. */
 public class HistoricalAnalysis {
 
-    static class Totals { long total; long declines; }
-
-    public static Map<String, Object> run(List<PaymentRow> df) {
+    public static Map<String, Object> run(JdbcTemplate jdbc) {
         long startNs = System.nanoTime();
 
-        Map<Integer, Totals> byWeek = new TreeMap<>();
-        Map<Integer, Totals> byHour = new TreeMap<>();
-        Map<Integer, Totals> byDay = new TreeMap<>();
-        Map<String, Totals> byDayHour = new LinkedHashMap<>();
+        List<Map<String, Object>> weeklyTrend = jdbc.queryForList("""
+                SELECT week AS "week", SUM(total_count) AS "total_count", SUM(decline_count) AS "decline_count"
+                FROM payment_declines GROUP BY week ORDER BY week
+                """).stream().map(HistoricalAnalysis::withRate).toList();
 
-        for (PaymentRow r : df) {
-            add(byWeek, r.week, r);
-            add(byHour, r.hour, r);
-            add(byDay, r.dayOfWeek, r);
-            add(byDayHour, r.dayOfWeek + "|" + r.hour, r);
-        }
+        List<Map<String, Object>> hourPattern = jdbc.queryForList("""
+                SELECT hour_of_day AS "hour", SUM(total_count) AS "total_count", SUM(decline_count) AS "decline_count"
+                FROM payment_declines GROUP BY hour_of_day ORDER BY hour_of_day
+                """).stream().map(HistoricalAnalysis::withRate).toList();
 
-        List<Map<String, Object>> weeklyTrend = new ArrayList<>();
-        byWeek.forEach((week, t) -> weeklyTrend.add(rowOf(Map.of("week", week), t)));
+        List<Map<String, Object>> dayPattern = jdbc.queryForList("""
+                SELECT day_of_week AS "day_of_week", SUM(total_count) AS "total_count", SUM(decline_count) AS "decline_count"
+                FROM payment_declines GROUP BY day_of_week ORDER BY day_of_week
+                """).stream().map(HistoricalAnalysis::withRate).toList();
 
-        List<Map<String, Object>> hourPattern = new ArrayList<>();
-        byHour.forEach((hour, t) -> hourPattern.add(rowOf(Map.of("hour", hour), t)));
-
-        List<Map<String, Object>> dayPattern = new ArrayList<>();
-        byDay.forEach((day, t) -> dayPattern.add(rowOf(Map.of("day_of_week", day), t)));
-
-        List<Map<String, Object>> dayHourHeatmap = new ArrayList<>();
-        byDayHour.forEach((key, t) -> {
-            String[] parts = key.split("\\|");
-            dayHourHeatmap.add(rowOf(Map.of("day_of_week", Integer.parseInt(parts[0]), "hour", Integer.parseInt(parts[1])), t));
-        });
+        List<Map<String, Object>> dayHourHeatmap = jdbc.queryForList("""
+                SELECT day_of_week AS "day_of_week", hour_of_day AS "hour",
+                       SUM(total_count) AS "total_count", SUM(decline_count) AS "decline_count"
+                FROM payment_declines GROUP BY day_of_week, hour_of_day ORDER BY day_of_week, hour_of_day
+                """).stream().map(HistoricalAnalysis::withRate).toList();
 
         double execMs = (System.nanoTime() - startNs) / 1e6;
 
@@ -53,17 +48,16 @@ public class HistoricalAnalysis {
         return result;
     }
 
-    private static <K> void add(Map<K, Totals> map, K key, PaymentRow r) {
-        Totals t = map.computeIfAbsent(key, k -> new Totals());
-        t.total += r.totalCount;
-        t.declines += r.declineCount;
-    }
-
-    private static Map<String, Object> rowOf(Map<String, Object> keyFields, Totals t) {
-        Map<String, Object> m = new LinkedHashMap<>(keyFields);
-        m.put("total_count", t.total);
-        m.put("decline_count", t.declines);
-        m.put("decline_rate", WowMath.round(t.declines / (double) Math.max(t.total, 1), 6));
-        return m;
+    /** Adds decline_rate to a row already carrying total_count/decline_count,
+     * as ints (the row-mapper hands back Long/BigDecimal from SUM(), and the
+     * frontend expects plain counts here same as everywhere else). */
+    private static Map<String, Object> withRate(Map<String, Object> row) {
+        long total = ((Number) row.get("total_count")).longValue();
+        long declines = ((Number) row.get("decline_count")).longValue();
+        Map<String, Object> out = new LinkedHashMap<>(row);
+        out.put("total_count", total);
+        out.put("decline_count", declines);
+        out.put("decline_rate", WowMath.round(declines / (double) Math.max(total, 1), 6));
+        return out;
     }
 }
